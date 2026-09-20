@@ -33,6 +33,7 @@ use Monolog\Handler\StreamHandler;
 use Monolog\Level;
 use Monolog\Logger;
 use TelegramRelay\Config;
+use TelegramRelay\Helpers\Filesystem;
 use TelegramRelay\Modules\Bridge;
 use TelegramRelay\Modules\Configuration;
 use TelegramRelay\Modules\Controls;
@@ -53,7 +54,12 @@ $logger->pushHandler(new StreamHandler(
     Level::fromName(ucfirst($config->logLevel)) ?? Level::Info,
 ));
 
-$relay = new Relay($config, new Store($config->storePath), ['logger' => $logger]);
+// One filesystem for the process: asynchronous where the platform has
+// ext-uv or ext-eio, durable and blocking where it does not.
+$filesystem = Filesystem::create();
+$logger->info('[relay] ' . $filesystem->describe());
+
+$relay = new Relay($config, new Store($config->storePath, $filesystem), ['logger' => $logger]);
 
 $relay
     ->addModule(new Configuration())
@@ -71,6 +77,11 @@ foreach ([\defined('SIGINT') ? SIGINT : null, \defined('SIGTERM') ? SIGTERM : nu
     if ($signal !== null && function_exists('pcntl_signal')) {
         $relay->getLoop()->addSignal($signal, static function () use ($relay): void {
             $relay->logger->info('[relay] shutting down');
+
+            // A queued write would never run once the loop stops, so the
+            // last change goes to disk here, synchronously.
+            $relay->getStore()->flush();
+
             $relay->getTelegram()->stop();
             $relay->close();
         });

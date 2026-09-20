@@ -13,6 +13,13 @@ declare(strict_types=1);
 
 namespace TelegramRelay;
 
+use React\Promise\Deferred;
+use React\Promise\PromiseInterface;
+
+use function React\Promise\resolve;
+
+use TelegramRelay\Helpers\Filesystem;
+
 /**
  * JSON-file backed persistence for the bridge configuration — which Discord
  * channel is linked to which Telegram chat, per guild — plus the last-known
@@ -27,8 +34,8 @@ namespace TelegramRelay;
  *  - **Writes are atomic.** Content goes to a temp file, is flushed to the
  *    disk, and is then renamed over the target, so a crash mid-write cannot
  *    leave a half-written file where the configuration used to be.
- *  - **The previous good copy is kept** beside it as `.bak` before every
- *    write.
+ *  - **The previous good copy is kept** beside it as `.bak`, written after
+ *    each successful save.
  *  - **A damaged file is never silently replaced.** If the JSON does not
  *    parse, the backup is tried; if that fails too, the file is preserved
  *    under a `.corrupt-<timestamp>` name rather than being overwritten by the
@@ -39,6 +46,20 @@ namespace TelegramRelay;
  *
  * Anything noticed while loading is recorded in {@see warnings()}, which the
  * bot logs — and tells its owner about — at startup.
+ *
+ * ## Reading and writing
+ *
+ * The load is blocking, once, in the constructor: it happens before `run()`,
+ * when there is no loop to block, and starting a bridge before it knows what
+ * it bridges would be worse than the microseconds it costs.
+ *
+ * Saves are the opposite. They happen while the loop is running — someone has
+ * just used `/telegram link` — so they go through {@see Filesystem}, which
+ * performs them off the loop where the platform allows it. A mutator updates
+ * memory and returns immediately; the write is queued behind whatever is
+ * already in flight, and several changes in a row collapse into one write
+ * rather than queueing one each. {@see saved()} resolves when the disk has
+ * caught up, which is what the tests wait on.
  *
  * Every mutator hands back a fresh {@see Links}, which is what callers act on;
  * the store owns persistence, {@see Links} owns routing.
@@ -53,11 +74,23 @@ final class Store
     /** @var array{links?: array<string, array<string, string>>, titles?: array<string, string>} */
     private array $data;
 
+    private readonly string $path;
+
     /** @var list<string> */
     private array $warnings = [];
 
-    public function __construct(private readonly string $path)
+    private readonly Filesystem $filesystem;
+
+    /** The write in flight, if any. */
+    private ?PromiseInterface $writing = null;
+
+    /** Whether something changed while that write was in flight. */
+    private bool $dirty = false;
+
+    public function __construct(string $path, ?Filesystem $filesystem = null)
     {
+        $this->path = $path;
+        $this->filesystem = $filesystem ?? Filesystem::create();
         $this->data = $this->load();
 
         foreach (glob($path . '.*.tmp') ?: [] as $stale) {
@@ -74,6 +107,12 @@ final class Store
     public function warnings(): array
     {
         return $this->warnings;
+    }
+
+    /** The filesystem it writes through, for the startup line. */
+    public function filesystem(): Filesystem
+    {
+        return $this->filesystem;
     }
 
     /** Where this store keeps its state, for logging and for the startup check. */
@@ -168,13 +207,9 @@ final class Store
      */
     private static function decode(string $path): ?array
     {
-        if (! is_file($path)) {
-            return null;
-        }
+        $contents = Filesystem::readBlocking($path);
 
-        $contents = @file_get_contents($path);
-
-        if ($contents === false) {
+        if ($contents === null) {
             return null;
         }
 
@@ -296,74 +331,155 @@ final class Store
     }
 
     /**
-     * Encode, write a pid-suffixed sibling temp file, flush it to the disk,
-     * back up what is there now, then rename the temp file over the target.
+     * Resolves when everything changed so far has reached the disk.
      *
-     * Bails without touching the live file if the data cannot be encoded or
-     * the temp write fails, so a bad value never truncates state. The `fsync`
-     * matters on a machine that loses power: without it the rename can land
-     * while the content is still in the page cache, leaving a zero-length file
-     * where the configuration was.
+     * Nothing has to await this — a save is fire-and-forget by design — but a
+     * test does, and so does a shutdown that wants to be sure. It follows the
+     * queue to the end: a change made while a write was in flight schedules
+     * another one, and this resolves after that too.
+     *
+     * @return PromiseInterface<bool>
+     */
+    public function saved(): PromiseInterface
+    {
+        if ($this->writing === null) {
+            return resolve(true);
+        }
+
+        return $this->writing->then(fn (): PromiseInterface => $this->saved());
+    }
+
+    /**
+     * Writes now, blocking, and returns whether it worked.
+     *
+     * For shutdown: the loop is about to stop, so a queued write would never
+     * run. Everything else should use the queue.
+     */
+    public function flush(): bool
+    {
+        if (! $this->dirty && $this->writing === null) {
+            return true;
+        }
+
+        $this->dirty = false;
+        $this->writing = null;
+
+        $json = $this->encode();
+
+        return $json !== null && $this->writeAtomically($json, Filesystem::blocking());
+    }
+
+    /**
+     * Queues a save, coalescing anything that arrives while one is running.
+     *
+     * Two `/telegram link` calls in the same second produce one write, and the
+     * second one still ends up on disk: the flag is checked when the first
+     * completes.
      */
     private function save(): void
     {
-        $json = json_encode($this->data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        if ($json === false) {
+        if ($this->writing !== null) {
+            $this->dirty = true;
+
             return;
         }
 
-        $dir = \dirname($this->path);
-        if (! is_dir($dir)) {
-            @mkdir($dir, 0o777, true);
+        // The pending promise has to exist *before* the write starts. With a
+        // synchronous backend the completion callback runs inside then(), so
+        // assigning its return value afterwards would put a finished promise
+        // back over the null the callback had just written — and every later
+        // save would think one was still in flight and never run.
+        $deferred = new Deferred();
+        $this->writing = $deferred->promise();
+
+        $this->write()->then(function (bool $ok) use ($deferred): void {
+            $this->writing = null;
+
+            if ($this->dirty) {
+                $this->dirty = false;
+                $this->save();
+            }
+
+            $deferred->resolve($ok);
+        });
+    }
+
+    /**
+     * Encode, write a pid-suffixed sibling temp file, rename it over the
+     * target, then write the backup.
+     *
+     * Bails without touching the live file if the data cannot be encoded or
+     * the temp write fails, so a bad value never truncates state. The backup
+     * is written *after* the save, not by copying the file about to be
+     * replaced: a backup that is one write behind would recover a
+     * configuration missing whatever was just added, which is exactly the
+     * change somebody would notice.
+     *
+     * @return PromiseInterface<bool>
+     */
+    private function write(): PromiseInterface
+    {
+        $json = $this->encode();
+
+        if ($json === null) {
+            return resolve(false);
         }
+
+        Filesystem::ensureDirectory(\dirname($this->path));
 
         $tmp = $this->path . '.' . getmypid() . '.tmp';
 
-        if (! self::writeDurably($tmp, $json)) {
-            @unlink($tmp);
+        return $this->filesystem->write($tmp, $json)->then(function (bool $written) use ($tmp, $json): PromiseInterface {
+            if (! $written || ! Filesystem::move($tmp, $this->path)) {
+                return $this->filesystem->delete($tmp)->then(static fn (): bool => false);
+            }
 
-            return;
-        }
+            $backupTmp = $this->path . '.' . getmypid() . '.bak.tmp';
 
-        if (! @rename($tmp, $this->path)) {
-            @unlink($tmp);
+            return $this->filesystem->write($backupTmp, $json)->then(function (bool $ok) use ($backupTmp): bool {
+                if ($ok) {
+                    Filesystem::move($backupTmp, $this->path . self::BACKUP_SUFFIX);
+                }
 
-            return;
-        }
-
-        // The backup is written *after* the save, not by copying the file
-        // about to be replaced: a backup that is one write behind would
-        // recover a configuration missing whatever was just added, which is
-        // exactly the change somebody would notice.
-        $backupTmp = $this->path . '.' . getmypid() . '.bak.tmp';
-
-        if (self::writeDurably($backupTmp, $json)) {
-            @rename($backupTmp, $this->path . self::BACKUP_SUFFIX);
-        } else {
-            @unlink($backupTmp);
-        }
+                return true;
+            });
+        });
     }
 
-    /** Writes a file and waits for the disk to acknowledge it. */
-    private static function writeDurably(string $path, string $contents): bool
+    /**
+     * The same dance, without promises, for {@see flush()}.
+     *
+     * A shutdown has no loop left to resolve a promise on, so this one path
+     * stays synchronous on purpose.
+     */
+    private function writeAtomically(string $json, Filesystem $filesystem): bool
     {
-        $handle = @fopen($path, 'wb');
+        Filesystem::ensureDirectory(\dirname($this->path));
 
-        if ($handle === false) {
+        $tmp = $this->path . '.' . getmypid() . '.tmp';
+
+        if (! Filesystem::writeDurably($tmp, $json) || ! Filesystem::move($tmp, $this->path)) {
+            @unlink($tmp);
+
             return false;
         }
 
-        $written = @fwrite($handle, $contents);
-        $flushed = $written === strlen($contents) && @fflush($handle);
+        $backupTmp = $this->path . '.' . getmypid() . '.bak.tmp';
 
-        // fsync() is PHP 8.1+ and can fail on exotic filesystems; a failure
-        // there is not a reason to lose the write.
-        if ($flushed && function_exists('fsync')) {
-            @fsync($handle);
+        if (Filesystem::writeDurably($backupTmp, $json)) {
+            Filesystem::move($backupTmp, $this->path . self::BACKUP_SUFFIX);
+        } else {
+            @unlink($backupTmp);
         }
 
-        @fclose($handle);
+        return true;
+    }
 
-        return $flushed;
+    /** The configuration as JSON, or `null` when it cannot be encoded. */
+    private function encode(): ?string
+    {
+        $json = json_encode($this->data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return $json === false ? null : $json;
     }
 }

@@ -215,6 +215,52 @@ than merely configured:
   `DISCORD_OWNER_ID`. Nothing is ever pruned automatically: a guild can be
   briefly unavailable during a Discord outage, and deleting someone's
   configuration over a bad ten seconds is worse than telling them about it.
+## Disk I/O and the event loop
+
+A blocking write stops the loop: while it runs, no heartbeat is sent and
+nothing is relayed. Saves therefore go through
+[react/filesystem](https://github.com/reactphp/filesystem), which performs
+them off the loop — **where the platform allows it**, which is the part worth
+being precise about:
+
+| Backend | Available on | What actually happens |
+| --- | --- | --- |
+| `ext-uv` | Linux, macOS **and Windows** — `php_uv` publishes Windows DLLs | genuinely asynchronous |
+| `ext-eio` | POSIX only | genuinely asynchronous |
+| neither | the default on a stock Windows build | `react/filesystem` falls back to an adapter that calls `file_put_contents()` and wraps the result in an already-resolved promise: the *shape* of async with none of the behaviour |
+
+Because that last row is the common one on Windows, the bridge does not pretend
+otherwise. When no async backend is present it performs the write itself — and
+since it is going to block anyway, it blocks *properly*, with `fflush()` and
+`fsync()`, so a machine that loses power cannot come back to a zero-length
+config. `putContents()` cannot express that, and trading durability for a
+promise that resolves just as late would be a bad deal.
+
+Measured on a Windows host, saving this bot's configuration:
+
+```
+blocking backend (no ext-uv)      median 3.5 ms   p95 4.4 ms
+async backend (ext-uv / ext-eio)  median 0.07 ms  p95 0.15 ms
+```
+
+**Install [php-uv](https://pecl.php.net/package/uv) if you host on Windows and
+want the loop never to wait.** The bot logs which backend it picked at startup,
+so there is no guessing.
+
+Either way the *caller* never waits on the disk:
+
+- ``/telegram link`` answers from memory; the write is queued behind whatever is
+  already in flight.
+- Several changes in a row collapse into one write — a burst of 20 costs 4 disk
+  writes (config + backup, twice), not 40.
+- Shutdown flushes anything outstanding synchronously, because a queued write
+  would never run once the loop stops.
+
+Reads are the exception, deliberately: the configuration is loaded in the
+constructor, before `run()`, when there is no loop to block and starting a
+bridge that does not know what it bridges would be worse. `rename()` and
+`mkdir()` stay direct calls too — they move no bytes, and `react/filesystem`
+has no asynchronous equivalent of either.
 ## What it deliberately doesn't do
 
 - **Deletions.** The Bot API sends a bot no update at all when a message is
@@ -254,6 +300,7 @@ src/TelegramRelay/
     ComponentRouter.php         button routing by custom_id
     CommandSync.php             has the published command drifted from the code?
     BridgeCheck.php             what the startup check found, in words
+    Filesystem.php              every disk access, behind promises
     Permissions.php             who may reconfigure a bridge
     RateLimiter.php             token bucket
 ```

@@ -77,6 +77,10 @@ final class Startup implements Module
             $store->path(),
         ));
 
+        // Worth one line at every start: whether saves actually happen off
+        // the loop is a property of the host, not of this build.
+        $bot->logger->info('[startup] ' . $store->filesystem()->describe());
+
         // A file that could not be read is the one thing here that needs
         // somebody's attention immediately: the bridge is running with less
         // configuration than it was given.
