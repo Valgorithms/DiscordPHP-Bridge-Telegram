@@ -57,6 +57,9 @@ final class Relay extends Discord
 
     private bool $modulesBooted = false;
 
+    /** The last startup check's headline; see {@see Modules\Startup}. */
+    private ?string $lastCheck = null;
+
     public function __construct(
         private readonly Config $config,
         private readonly Store $store,
@@ -140,6 +143,34 @@ final class Relay extends Discord
         return MessageBuilder::new()->setAllowedMentions(['parse' => []]);
     }
 
+    /** What the last startup check found, for `/telegram status`. */
+    public function rememberCheck(string $summary): void
+    {
+        $this->lastCheck = $summary;
+    }
+
+    /** The last startup check's headline, or `null` before it has run. */
+    public function getLastCheck(): ?string
+    {
+        return $this->lastCheck;
+    }
+
+    /** Tells a human, when one is configured, rather than only the log. */
+    public function notifyOwner(string $markdown): void
+    {
+        $ownerId = $this->config->discordOwnerId;
+
+        if ($ownerId === null) {
+            return;
+        }
+
+        $this->users->fetch($ownerId)->then(
+            fn ($user) => $user->sendMessage(self::reply()->setContent($markdown)),
+        )->catch(fn (\Throwable $e) => $this->logger->error(
+            '[relay] could not DM the owner: ' . $e->getMessage(),
+        ));
+    }
+
     /**
      * Brings up the Telegram client once Discord is ready, then boots modules.
      *
@@ -181,22 +212,6 @@ final class Relay extends Discord
                 $this->bootModules(skip: ['bridge']);
             },
         );
-    }
-
-    /** Tells a human, when one is configured, rather than only the log. */
-    private function notifyOwner(string $markdown): void
-    {
-        $ownerId = $this->config->discordOwnerId;
-
-        if ($ownerId === null) {
-            return;
-        }
-
-        $this->users->fetch($ownerId)->then(
-            fn ($user) => $user->sendMessage(self::reply()->setContent($markdown)),
-        )->catch(fn (\Throwable $e) => $this->logger->error(
-            '[relay] could not DM the owner: ' . $e->getMessage(),
-        ));
     }
 
     /** @param list<string> $skip */

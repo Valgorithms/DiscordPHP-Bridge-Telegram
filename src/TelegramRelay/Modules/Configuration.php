@@ -84,18 +84,14 @@ final class Configuration implements Module
     }
 
     /**
-     * Registers the global command, once.
+     * Publishes the global command.
      *
-     * Skipped when Discord already has it: a global command takes up to an
-     * hour to propagate, and re-creating it on every boot would restart that
-     * clock for no reason.
+     * Created when Discord has never seen it, updated when this build defines
+     * something different, and left alone otherwise — see
+     * {@see RoutesCommands::publishCommand()}.
      */
     private function define(Relay $bot, GlobalCommandRepository $repo): void
     {
-        if ($repo->get('name', self::COMMAND) !== null) {
-            return;
-        }
-
         $sub = static fn (string $name, string $desc): Option => (new Option($bot))
             ->setType(Option::SUB_COMMAND)->setName($name)->setDescription($desc);
 
@@ -111,7 +107,7 @@ final class Configuration implements Module
             ->setDescription('The Telegram chat: an id like -1001234567890, or @username for a public group.')
             ->setRequired(true);
 
-        CommandBuilder::new()
+        $this->publishCommand($bot, $repo, CommandBuilder::new()
             ->setType(Command::CHAT_INPUT)
             ->setName(self::COMMAND)
             ->setDescription('Bridge this server to a Telegram chat. Manage Server only.')
@@ -126,9 +122,7 @@ final class Configuration implements Module
                 ->addOption($chatOption()))
             ->addOption($sub('unlink', 'Stop bridging a channel. Defaults to the one you are in.')
                 ->addOption($channelOption(false)))
-            ->addOption($sub('reset', 'Clear every bridge on this server.'))
-            ->create($repo)
-            ->save(self::COMMAND . ' command');
+            ->addOption($sub('reset', 'Clear every bridge on this server.')));
     }
 
     /**
@@ -157,6 +151,11 @@ final class Configuration implements Module
         if ($up) {
             $queued = $bot->gateway()->queued();
             $lines[] = sprintf('📤 **%d** message%s queued for Telegram', $queued, $queued === 1 ? '' : 's');
+        }
+
+        $check = $bot->getLastCheck();
+        if ($check !== null) {
+            $lines[] = sprintf('🩺 Last startup check: %s', $check);
         }
 
         $lines[] = '';

@@ -93,19 +93,16 @@ final class Controls implements Module
             ->on('invite', fn (Interaction $i, array $args) => $this->invite($bot, $i, $args[0] ?? null));
     }
 
+    /** Published, and updated when this build defines something different. */
     private function define(Relay $bot, GlobalCommandRepository $repo): void
     {
-        if ($repo->get('name', self::COMMAND) !== null) {
-            return;
-        }
-
         $sub = static fn (string $name, string $desc): Option => (new Option($bot))
             ->setType(Option::SUB_COMMAND)->setName($name)->setDescription($desc);
 
         $option = static fn (int $type, string $name, string $desc, bool $required = true): Option => (new Option($bot))
             ->setType($type)->setName($name)->setDescription($desc)->setRequired($required);
 
-        CommandBuilder::new()
+        $this->publishCommand($bot, $repo, CommandBuilder::new()
             ->setType(Command::CHAT_INPUT)
             ->setName(self::COMMAND)
             ->setDescription('Act on the Telegram chat this channel is bridged to.')
@@ -130,9 +127,7 @@ final class Controls implements Module
                 ->addOption($option(Option::INTEGER, 'user_id', 'Their numeric Telegram user id.'))
                 ->addOption($option(Option::INTEGER, 'minutes', 'Ban for this long, then lift it automatically.', false)))
             ->addOption($sub('unban', 'Lift a Telegram ban. Manage Server only.')
-                ->addOption($option(Option::INTEGER, 'user_id', 'Their numeric Telegram user id.')))
-            ->create($repo)
-            ->save(self::COMMAND . ' command');
+                ->addOption($option(Option::INTEGER, 'user_id', 'Their numeric Telegram user id.'))));
     }
 
     /** `/tg send` — the relay in one direction, deliberately. */

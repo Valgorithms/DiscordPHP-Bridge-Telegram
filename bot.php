@@ -36,6 +36,7 @@ use TelegramRelay\Config;
 use TelegramRelay\Modules\Bridge;
 use TelegramRelay\Modules\Configuration;
 use TelegramRelay\Modules\Controls;
+use TelegramRelay\Modules\Startup;
 use TelegramRelay\Relay;
 use TelegramRelay\Store;
 
@@ -57,7 +58,9 @@ $relay = new Relay($config, new Store($config->storePath), ['logger' => $logger]
 $relay
     ->addModule(new Configuration())
     ->addModule(new Controls())
-    ->addModule(new Bridge());
+    ->addModule(new Bridge())
+    // Last, so it reports on a bridge that is already listening.
+    ->addModule(new Startup());
 
 $relay->on('ready', static function (Relay $bot): void {
     $bot->logger->info(sprintf('[relay] logged into Discord as %s', (string) $bot->user->username));

@@ -13,10 +13,13 @@ declare(strict_types=1);
 
 namespace TelegramRelay\Modules;
 
+use Discord\Builders\CommandBuilder;
 use Discord\Helpers\ExCollectionInterface;
 use Discord\Parts\Guild\Guild;
 use Discord\Parts\Interactions\Interaction;
+use Discord\Repository\Interaction\GlobalCommandRepository;
 use TelegramRelay\Builders\PanelBuilder;
+use TelegramRelay\Helpers\CommandSync;
 use TelegramRelay\Helpers\Permissions;
 use TelegramRelay\Relay;
 
@@ -74,6 +77,46 @@ trait RoutesCommands
 
                 return $handler($interaction, $guild, $options);
             },
+        );
+    }
+
+    /**
+     * Publishes a command definition, creating it when Discord has never seen
+     * it and updating it when this build defines something different.
+     *
+     * The update is the part that matters across a restart: a bot that only
+     * creates a missing command keeps whatever it published the first time, so
+     * a sub-command added later is routed in code and never offered by
+     * Discord. {@see CommandSync} decides whether anything actually changed,
+     * because a global command takes up to an hour to propagate and rewriting
+     * it on every boot would restart that clock for nothing.
+     */
+    protected function publishCommand(Relay $bot, GlobalCommandRepository $repo, CommandBuilder $builder): void
+    {
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode((string) json_encode($builder), true) ?? [];
+        $name = (string) ($payload['name'] ?? '');
+
+        $published = $repo->get('name', $name);
+
+        if ($published === null) {
+            $builder->create($repo)->save($name . ' command');
+            $bot->logger->info(sprintf('[%s] registered /%s', $this->name(), $name));
+
+            return;
+        }
+
+        if (! CommandSync::differs($published->jsonSerialize(), $payload)) {
+            return;
+        }
+
+        $bot->logger->info(sprintf('[%s] /%s has changed since it was published — updating it', $this->name(), $name));
+
+        $published->fill($payload);
+
+        $repo->save($published, 'definition changed')->then(
+            fn () => $bot->logger->info(sprintf('[%s] updated /%s', $this->name(), $name)),
+            fn (\Throwable $e) => $bot->logger->error(sprintf('[%s] could not update /%s: %s', $this->name(), $name, $e->getMessage())),
         );
     }
 

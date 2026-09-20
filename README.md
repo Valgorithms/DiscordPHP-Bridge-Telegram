@@ -180,6 +180,41 @@ delayed and only a genuine burst is paced.
 The number is not carried across: it was shared with a Telegram group, not with
 a Discord server.
 
+## Surviving a restart
+
+Bridges configured with `/telegram link` live in `var/relay.json` and are
+reloaded on every start — nothing has to be set up again. That file is the only
+record of them, so it is treated as one:
+
+- **Writes are atomic and flushed to disk.** A crash mid-write, or a machine
+  losing power, cannot leave a half-written file where the configuration was.
+- **The last good copy is kept** beside it as `relay.json.bak`, written after
+  each successful save.
+- **A damaged file is never silently replaced.** If the JSON doesn't parse the
+  backup is used; if that fails too, the file is preserved as
+  `relay.json.corrupt-<timestamp>` and the bridge starts empty rather than
+  overwriting it on the next `/telegram link`.
+- **Entries of the wrong shape are dropped, not loaded**, so a hand-edited file
+  can't take the bridge down — and the good entries in it still survive the
+  next write.
+
+On top of that, a start does three things that keep it actually working rather
+than merely configured:
+
+- **It re-publishes slash commands whose definition changed.** A bot that only
+  registers a command when it is missing keeps whatever it published the first
+  time, so a sub-command added later is routed in code and never offered by
+  Discord. The two definitions are compared, and only a real difference is
+  written.
+- **It checks every restored bridge**, ten seconds in, once the guild caches
+  have settled: can it still see the Discord channel, and can it still see the
+  Telegram chat? A bridge that stopped working while the bot was down — a
+  deleted channel, a group that kicked it — is otherwise indistinguishable from
+  a quiet day.
+- **It says what it found**, in the log, in `/telegram status`, and by DM to
+  `DISCORD_OWNER_ID`. Nothing is ever pruned automatically: a guild can be
+  briefly unavailable during a Discord outage, and deleting someone's
+  configuration over a bad ten seconds is worse than telling them about it.
 ## What it deliberately doesn't do
 
 - **Deletions.** The Bot API sends a bot no update at all when a message is
@@ -204,6 +239,7 @@ src/TelegramRelay/
     PanelBuilder.php            Components v2 panels; extends MessageBuilder
   Modules/
     Module.php                  what a feature looks like
+    Startup.php                 checks the restored bridges still work
     RoutesCommands.php          sub-command registration + the permission gate
     Configuration.php           /telegram
     Controls.php                /tg — Telegram's features, from Discord
@@ -216,6 +252,8 @@ src/TelegramRelay/
     Media.php                   what a Telegram message is carrying
     MessageMap.php              which message became which, for edits
     ComponentRouter.php         button routing by custom_id
+    CommandSync.php             has the published command drifted from the code?
+    BridgeCheck.php             what the startup check found, in words
     Permissions.php             who may reconfigure a bridge
     RateLimiter.php             token bucket
 ```

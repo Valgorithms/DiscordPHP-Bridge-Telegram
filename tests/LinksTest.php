@@ -71,6 +71,14 @@ final class LinksTest extends TestCase
         $this->assertFalse($links->isBridged('-1009999999999'));
     }
 
+    public function testGuildsAreListedForTheStartupCheck(): void
+    {
+        $links = new Links(['g1' => ['chan1' => '-1001'], 'g2' => ['chan2' => '-1002']]);
+
+        $this->assertSame(['g1', 'g2'], $links->guilds());
+        $this->assertSame([], (new Links())->guilds());
+    }
+
     public function testForGuildReturnsOnlyThatGuild(): void
     {
         $links = new Links([
