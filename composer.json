@@ -1,0 +1,74 @@
+{
+    "name": "vzgcoders/discordphp-telegramrelay",
+    "description": "Bridges a Discord channel and a Telegram chat, in both directions, and exposes Telegram's features to Discord through slash commands and Components v2 panels.",
+    "keywords": ["discord", "telegram", "chat", "relay", "bridge", "bot", "reactphp", "async"],
+    "type": "project",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Valithor Obsidion",
+            "email": "valithor@valgorithms.com"
+        }
+    ],
+    "require": {
+        "php": "^8.4",
+        "team-reflex/discord-php": "dev-master",
+        "discord-php/http": "dev-master as 10.1.7",
+        "vzgcoders/telegramphp": "@dev",
+        "monolog/monolog": "^3.0",
+        "react/event-loop": "^1.5",
+        "react/promise": "^3.2"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.64",
+        "phpunit/phpunit": "^11.0 || ^10.5",
+        "phpacker/phpacker": "^0.6.4"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../DiscordPHP",
+            "options": {
+                "symlink": true
+            }
+        },
+        {
+            "type": "path",
+            "url": "../DiscordPHP-Http",
+            "options": {
+                "symlink": true
+            }
+        },
+        {
+            "type": "path",
+            "url": "../TelegramPHP",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "TelegramRelay\\": "src/TelegramRelay/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "TelegramRelay\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "cs": "php-cs-fixer fix",
+        "test": "phpunit",
+        "phpacker": "@phpacker:bot",
+        "phpacker:bot": "phpacker build --src=bot.php --dest=bin/build/bot"
+    },
+    "scripts-descriptions": {
+        "phpacker:bot": "Build a standalone binary for bot.php into bin/build/bot."
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "config": {
+        "sort-packages": true
+    }
+}
