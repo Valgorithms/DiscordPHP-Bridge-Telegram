@@ -35,6 +35,7 @@ final class TelegramConfig
         public readonly string $token,
         public readonly ?string $baseUrl,
         public readonly float $pollInterval,
+        public readonly ?string $caBundle,
     ) {
     }
 
@@ -48,7 +49,24 @@ final class TelegramConfig
             // For a self-hosted Bot API server. Unset means Telegram's own.
             baseUrl: $environment->get('TELEGRAM_BASE_URL'),
             pollInterval: max(0.5, (float) $environment->or('TELEGRAM_POLL_INTERVAL', '1.0')),
+            caBundle: $environment->get('TELEGRAM_CA_BUNDLE'),
         );
+    }
+
+    /**
+     * The `socket_options` TelegramPHP should connect with.
+     *
+     * Only ever a CA bundle. A Windows PHP build typically ships without an
+     * `openssl.cafile`, so TLS to `api.telegram.org` fails outright with
+     * "unable to get local issuer certificate"; pointing the connector at a
+     * `cacert.pem` is the fix. Everything else is left at ReactPHP's defaults —
+     * in particular, verification is never disabled.
+     *
+     * @return array<string, mixed>
+     */
+    public function socketOptions(): array
+    {
+        return $this->caBundle === null ? [] : ['tls' => ['cafile' => $this->caBundle]];
     }
 
     /** Whether the environment carries enough to install this connector at all. */
