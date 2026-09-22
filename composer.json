@@ -1,8 +1,18 @@
 {
-    "name": "vzgcoders/discordphp-telegramrelay",
-    "description": "Bridges a Discord channel and a Telegram chat, in both directions, and exposes Telegram's features to Discord through slash commands and Components v2 panels.",
-    "keywords": ["discord", "telegram", "chat", "relay", "bridge", "bot", "reactphp", "async"],
-    "type": "project",
+    "name": "vzgcoders/discordphp-bridge-telegram",
+    "description": "The Telegram connector for DiscordPHP-Bridge: a two-way chat bridge with edits and media, Components v2 panels, and one command catalogue shared with every other network the bot is on.",
+    "keywords": [
+        "discord",
+        "telegram",
+        "chat",
+        "relay",
+        "bridge",
+        "bot",
+        "reactphp",
+        "async",
+        "connector"
+    ],
+    "type": "library",
     "license": "MIT",
     "authors": [
         {
@@ -12,30 +22,19 @@
     ],
     "require": {
         "php": "^8.4",
-        "discord-php/http": "dev-master as 10.1.7",
-        "monolog/monolog": "^3.0",
+        "discord-php/bridge": "@dev",
         "react/event-loop": "^1.5",
-        "react/filesystem": "^0.2@dev",
         "react/promise": "^3.2",
-        "team-reflex/discord-php": "dev-master",
         "vzgcoders/telegramphp": "@dev"
     },
     "require-dev": {
         "friendsofphp/php-cs-fixer": "^3.64",
-        "phpunit/phpunit": "^11.0 || ^10.5",
-        "phpacker/phpacker": "^0.6.4"
+        "phpunit/phpunit": "^11.0 || ^10.5"
     },
     "repositories": [
         {
             "type": "path",
-            "url": "../DiscordPHP",
-            "options": {
-                "symlink": true
-            }
-        },
-        {
-            "type": "path",
-            "url": "../DiscordPHP-Http",
+            "url": "../DiscordPHP-Bridge",
             "options": {
                 "symlink": true
             }
@@ -50,22 +49,17 @@
     ],
     "autoload": {
         "psr-4": {
-            "TelegramRelay\\": "src/TelegramRelay/"
+            "Bridge\\Telegram\\": "src/Bridge/Telegram/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "TelegramRelay\\Tests\\": "tests/"
+            "Bridge\\Telegram\\Tests\\": "tests/"
         }
     },
     "scripts": {
         "cs": "php-cs-fixer fix",
-        "test": "phpunit",
-        "phpacker": "@phpacker:bot",
-        "phpacker:bot": "phpacker build --src=bot.php --dest=bin/build/bot"
-    },
-    "scripts-descriptions": {
-        "phpacker:bot": "Build a standalone binary for bot.php into bin/build/bot."
+        "test": "phpunit"
     },
     "minimum-stability": "dev",
     "prefer-stable": true,

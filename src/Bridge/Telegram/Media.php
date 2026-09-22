@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /*
- * This file is a part of the DiscordPHP-TelegramRelay project.
+ * This file is a part of the DiscordPHP-Bridge-Telegram project.
  *
  * Copyright (c) 2026-present Valithor Obsidion <valithor@valgorithms.com>
  *
@@ -11,7 +11,7 @@ declare(strict_types=1);
  * with this source code in the LICENSE.md file.
  */
 
-namespace TelegramRelay\Helpers;
+namespace Bridge\Telegram;
 
 /**
  * Works out what a Telegram message is carrying besides text, and whether the

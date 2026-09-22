@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /*
- * This file is a part of the DiscordPHP-TelegramRelay project.
+ * This file is a part of the DiscordPHP-Bridge-Telegram project.
  *
  * Copyright (c) 2026-present Valithor Obsidion <valithor@valgorithms.com>
  *
@@ -11,8 +11,9 @@ declare(strict_types=1);
  * with this source code in the LICENSE.md file.
  */
 
-namespace TelegramRelay\Bridge;
+namespace Bridge\Telegram;
 
+use Bridge\Support\RateLimiter;
 use Psr\Log\LoggerInterface;
 use React\EventLoop\LoopInterface;
 use React\Promise\Deferred;
@@ -20,7 +21,6 @@ use React\Promise\PromiseInterface;
 use Telegram\Events\Event;
 use Telegram\Parts\Message;
 use Telegram\Telegram;
-use TelegramRelay\Helpers\RateLimiter;
 
 /**
  * Owns the Telegram side of the bridge: the update subscription, and a paced
@@ -29,7 +29,7 @@ use TelegramRelay\Helpers\RateLimiter;
  * There is nothing here corresponding to an IRC JOIN — Telegram pushes updates
  * for every chat the bot is a member of, whether or not the bridge is
  * interested — so membership is Telegram's business and filtering is
- * {@see \TelegramRelay\Modules\Bridge}'s. What this class owns is *pacing*:
+ * {@see TelegramConnector}'s. What this class owns is *pacing*:
  * every outbound message passes a per-chat bucket and a global one, because
  * Telegram's limits are per-chat and per-bot at the same time and a burst that
  * respects only one of them still earns a `429`.

@@ -1,318 +1,137 @@
-# DiscordPHP-TelegramRelay
+# DiscordPHP-Bridge-Telegram
 
-Bridges a Discord channel and a Telegram chat, in both directions, and puts
-Telegram's own features — polls, pins, bans, invite links — behind Discord
-slash commands and Components v2 panels. A server admin wires it up from inside
-Discord with `/telegram`; nothing to edit on the host.
-
-Built on [DiscordPHP](https://github.com/discord-php/DiscordPHP) and
-[TelegramPHP](https://github.com/Valgorithms/TelegramPHP), sharing one ReactPHP
-event loop.
+The Telegram connector for [DiscordPHP-Bridge](https://github.com/discord-php/DiscordPHP-Bridge):
+a two-way chat bridge with edits and media, Components v2 panels, and one
+command catalogue shared with every other network the bot is on.
 
 ```
-#general  ──────────►  t.me/yourgroup
+#general  ──────────►  t.me/mygroup
           ◄──────────
 ```
 
-## What it does
+Built on [TelegramPHP](https://github.com/Valgorithms/TelegramPHP), sharing the
+bot's ReactPHP event loop.
 
-- **Discord → Telegram.** A message in a bridged channel arrives in the chat as
-  **author**: message. Mentions are resolved to names, the first image
-  attachment is sent as a photo, anything else is linked.
-- **Telegram → Discord.** Messages are posted through a webhook, so each sender
-  keeps their own name instead of arriving as a wall of identical bot messages.
-- **Media both ways.** Photos, documents, voice notes, video and stickers are
-  downloaded and re-uploaded to Discord — never linked, because a Telegram file
-  URL contains the bot token.
-- **Edits follow the message.** An edit on either side rewrites the copy on the
-  other, for as long as the bridge still remembers it.
-- **Service messages are relayed**, so a Discord reader sees that someone
-  joined, the group was renamed, or a message was pinned.
-- **Replies keep their context**, quoted in one line.
-- **Never relays its own output.** See [Loop prevention](#loop-prevention).
-- **Many servers, one bot.** Several Discord servers can follow the same
-  Telegram chat; each gets a copy.
+## Installing it
 
-## Setup
+```php
+use Bridge\Telegram\{TelegramConfig, TelegramConnector};
 
-```bash
-composer install
-cp env.example .env    # then fill it in
-php bot.php
+if (TelegramConfig::isConfigured($environment)) {
+    $bot->addConnector(new TelegramConnector(TelegramConfig::fromEnvironment($environment)));
+}
 ```
 
-`.env` needs a Discord bot token and a Telegram bot token from
-[@BotFather](https://t.me/botfather). Four things are easy to miss:
+That is the whole integration. The connector arrives with `link`, `here`,
+`unlink`, `list`, `status` and `reset` already written — the core defines those
+once for every connector — so what is in this package is only what is actually
+about Telegram.
 
-- **Turn Telegram's privacy mode off.** @BotFather → `/setprivacy` → Disable,
-  then remove and re-add the bot to the group. A bot with privacy mode on — the
-  default — only receives commands and replies addressed to it, so the bridge
-  relays nothing out of Telegram and looks broken in exactly one direction.
-  This is the single most common setup problem; `/telegram status` says so too.
-- **Use a dedicated Discord application.** Slash commands are registered per
-  *application*, so sharing a token with another bot that also defines a global
-  `/telegram` means whichever boots first wins and the other silently skips
-  registering. No error, nothing in the log.
-- **Enable the Message Content intent** on the Discord application page.
-  Without it every bridged message arrives empty.
-- **Grant the bot Manage Webhooks** in the bridged channel. Without it the
-  bridge still works, but Telegram messages arrive as plain `**name:** message`
-  bot messages instead of per-sender identities.
+`.env` needs one thing: `TELEGRAM_TOKEN`, from [@BotFather](https://t.me/BotFather).
+Two more are optional: `TELEGRAM_BASE_URL` for a self-hosted Bot API server, and
+`TELEGRAM_POLL_INTERVAL` to slow the long poll down.
 
-On Windows, PHP usually ships without a CA bundle and TLS to `api.telegram.org`
-fails; point `TELEGRAM_CA_BUNDLE` at a `cacert.pem`. To move files larger than
-20 MB, run a [local Bot API server](https://core.telegram.org/bots/api#using-a-local-bot-api-server)
-and set `TELEGRAM_BASE_URL`.
+**Turn off privacy mode**, or `/setprivacy` → Disable, via BotFather. With it on
+the bot only sees messages addressed to it, so the bridge relays almost nothing
+and the reason is invisible from Discord.
 
-## Configuring a bridge
+## What it can do that a text-only network cannot
 
-`/telegram`, restricted to the server owner or anyone with **Administrator** /
-**Manage Server**:
+The connector implements two of the core's optional capabilities, and the relay
+asks rather than assuming:
 
-| Command | |
+- **`Capability\Editing`.** Editing a Discord message rewrites the Telegram copy
+  in place, and vice versa. A network that cannot edit gets the original left
+  alone rather than a second "(edited)" message, which is worse.
+- **`Capability\Media`.** A picture posted in Discord arrives in Telegram as a
+  *picture*, not a link. That matters more than it sounds: Discord's CDN links
+  are signed and expire in about a day, so a relayed link works for people
+  reading along live and is dead by the time anyone reads the logs.
+
+Only the first image goes as a photo — a media group is a different call and
+needs every attachment to be an image — and everything else relays as a link in
+the text.
+
+## Commands
+
+Everything below works four ways — as a Discord slash command, as a Discord
+prefix command, in Telegram chat, and in the chat of any *other* network the bot
+is bridged to. `!telegram` on its own lists what you can run.
+
+| | |
 | --- | --- |
-| `/telegram link channel:#general chat:-1001234567890` | Bridge a channel |
-| `/telegram here chat:@yourgroup` | Bridge the channel you're in |
-| `/telegram unlink [channel:#general]` | Stop bridging it |
-| `/telegram list` | This server's bridges, each with an Unlink button |
-| `/telegram status` | Whether the Telegram side is actually up |
-| `/telegram reset` | Clear them all, behind a confirmation |
+| `/telegram link` · `here` · `unlink` · `list` · `status` · `reset` | the bridge (admin) |
+| `/telegram chat send` · `photo` · `poll` · `info` | speak into the chat |
+| `/telegram chat pin` · `unpin` | the pinned message (admin) |
+| `/telegram mod ban` · `unban` | moderation (admin) |
 
-`chat:` accepts a numeric id, an `@username`, or a `t.me/...` link, and the
-bridge checks it can see the chat before wiring anything up — a typo otherwise
-produces a bridge that silently never works. A `t.me/+…` invite link is
-rejected with an explanation: it is a join link, not a chat id.
+A chat drops the group and keeps the qualifier — `!telegram send`, not
+`!telegram chat send` and never a bare `!send`. That is deliberate: a name is
+only free because no connector has claimed it yet, and since every connector's
+commands are offered in every chat, an unqualified `!ban` is one installed
+package away from meaning two things.
 
-To find a group's id: add the bot, then forward one of its messages to
-[@userinfobot](https://t.me/userinfobot).
+`send`, `photo`, `poll` and `info` are open to everyone, which is safe because
+they can only ever reach a chat somebody with **Manage Server** already bridged
+to that channel. Pinning, unpinning and banning need that same rung.
 
-That permission gate is the security model: whoever can run `/telegram link`
-decides which Discord channel gets copied into a Telegram group. Set it on a
-private channel and that channel is now being read by people who were never in
-the server.
+`/telegram chat info` answers with a Components v2 panel: what the bot can see
+about the chat, plus Refresh, Member count and Invite link buttons. Each button
+carries the chat id it was drawn for, so a panel still works after the channel
+has been re-linked somewhere else, and after the bot has restarted.
 
-## Telegram's features, from Discord
+**Invite links are ephemeral and gated, deliberately.**
+`exportChatInviteLink` *revokes the chat's previous link* and mints a new one,
+so the answer is both a working invite to a private group and the reason the old
+one stopped working — not something to leave sitting in a channel.
 
-`/tg` acts on **whichever chat the current channel is bridged to**, so no
-command takes a chat id and none can reach a chat this server has not linked.
+## The token in the URL
 
-| Command | | Who |
-| --- | --- | --- |
-| `/tg send text:…` | Say something in the chat | anyone |
-| `/tg photo file:… caption:…` | Upload a photo | anyone |
-| `/tg poll question:… options:a, b, c` | Start a real Telegram poll | anyone |
-| `/tg chat` | The chat's details, with buttons | anyone |
-| `/tg pin message_id:…` | Pin a message | Manage Server |
-| `/tg unpin [message_id:…]` | Unpin one, or the latest | Manage Server |
-| `/tg ban user_id:… [minutes:…]` | Ban, or ban for a while | Manage Server |
-| `/tg unban user_id:…` | Lift a ban | Manage Server |
+A Telegram file URL contains the bot token in its path. That is Telegram's
+design, not a mistake to work around, and it has three consequences this package
+takes seriously:
 
-`send`, `photo`, `poll` and `chat` are open to anyone who can use the channel:
-they can already have the bridge carry their words simply by typing, so gating
-the tidier route would be theatre. The rest act on the Telegram chat with the
-*bot's* rank rather than the caller's, so they are gated like the wiring
-itself.
+- Such a URL is **never logged**, never put in an exception message that might
+  be, and never posted into Discord.
+- A Telegram error is never re-used unexamined either, because a Telegram error
+  can quote the request URL. Every one is matched against known causes and
+  rewritten, with any URL in it replaced before it can reach a channel.
+- The connector hands the core `null` for a Telegram attachment's URL, every
+  time. The relay then names the file rather than linking it.
 
-The `/tg chat` panel carries **Refresh**, **Invite link** and **Member count**
-buttons. Invite link is always ephemeral, because `exportChatInviteLink`
-*revokes the previous link* and mints a new one — that is not something to
-leave sitting in a channel.
+## Coming from DiscordPHP-TelegramRelay
 
-## Components v2
+This repository *is* that project, with everything that was not about Telegram
+moved into the core. The commands were renamed to make room for other networks:
 
-Every answer is a Components v2 panel rather than an embed, because these
-panels are not decorated text. `/telegram list` needs a button *per row* to
-unlink that row — a `Section` accessory, which an embed cannot express — and
-pressing it redraws the panel in place so the row that was just removed is
-visibly gone.
+| Before | Now |
+| --- | --- |
+| `/telegram link` · `here` · `unlink` · `list` · `reset` | unchanged |
+| `/telegram status` | unchanged |
+| `/tg send` · `photo` · `poll` | `/telegram chat send` · `photo` · `poll` |
+| `/tg chat` | `/telegram chat info` |
+| `/tg pin` · `unpin` | `/telegram chat pin` · `unpin` |
+| `/tg ban` · `unban` | `/telegram mod ban` · `unban` |
 
-Panels are built by [`PanelBuilder`](src/TelegramRelay/Builders/PanelBuilder.php),
-which *extends* `MessageBuilder`: a panel **is** a message builder, so anything
-that takes one — `respondWithMessage()`, `updateMessage()`, `Webhook::execute()`
-— takes a panel with no unwrapping step.
+The old names are unregistered from Discord automatically on the first boot
+where every connector starts.
 
-Buttons are routed by `custom_id` rather than by a listener bound to the button
-instance, so a panel posted before a restart still works and the process holds
-one handler per action instead of one per message. Ids look like
-`tg:unlink:1234567890`, and
-[`ComponentRouter`](src/TelegramRelay/Helpers/ComponentRouter.php) refuses to
-build one that exceeds Discord's 100-character limit rather than finding out
-when the message is rejected.
-
-## Loop prevention
-
-A bridge that repeats itself is an infinite loop that gets the account limited
-on both networks. Each direction drops its own output as early as it can:
-
-- **Discord → Telegram** ignores any message carrying a `webhook_id`, and any
-  message from a bot. Relayed Telegram chat arrives *through* a webhook, so it
-  is caught by the first rule. Other bots are dropped too, deliberately: two
-  bridges in one channel would otherwise ping-pong forever.
-- **Telegram → Discord** ignores anything sent by the bridge's own bot account.
-  Telegram does not echo a bot's own sends back to it, but two instances
-  sharing one token would otherwise relay each other forever.
-
-## Safety
-
-**HTML injection.** The bridge sends `parse_mode: HTML` so it can bold the
-author's name, which means relayed text is parsed as markup. Everything from
-Discord goes through `MessageText::escapeHtml()` first — an unescaped `<b>`
-would style the message, and a stray `<` would make Telegram reject the send
-outright, silently stopping the bridge. It is
-[tested directly](tests/MessageTextTest.php).
-
-**The bot token in file URLs.** A Telegram file is served from
-`api.telegram.org/file/bot<TOKEN>/…`. Posting one into Discord would hand the
-bot's credentials to everyone who can read the channel, so files are downloaded
-and re-uploaded, that URL is never logged, and the `/tg chat` panel has no
-thumbnail even though Telegram offers a chat photo.
-
-**Mentions.** Telegram chat is untrusted input, so everything delivered into
-Discord is sent with `allowed_mentions: {parse: []}`. Someone typing
-`@everyone` still *reads* as having typed it, but pings nobody.
-
-**Rate limits.** Telegram allows roughly 20 messages a minute into one group
-and 30 a second overall, and exceeding either earns a `429`. Outbound messages
-pass a per-chat token bucket *and* a global one, so ordinary chat is never
-delayed and only a genuine burst is paced.
-
-**Phone numbers.** A shared contact is relayed as "shared a contact", by name.
-The number is not carried across: it was shared with a Telegram group, not with
-a Discord server.
-
-## Surviving a restart
-
-Bridges configured with `/telegram link` live in `var/relay.json` and are
-reloaded on every start — nothing has to be set up again. That file is the only
-record of them, so it is treated as one:
-
-- **Writes are atomic and flushed to disk.** A crash mid-write, or a machine
-  losing power, cannot leave a half-written file where the configuration was.
-- **The last good copy is kept** beside it as `relay.json.bak`, written after
-  each successful save.
-- **A damaged file is never silently replaced.** If the JSON doesn't parse the
-  backup is used; if that fails too, the file is preserved as
-  `relay.json.corrupt-<timestamp>` and the bridge starts empty rather than
-  overwriting it on the next `/telegram link`.
-- **Entries of the wrong shape are dropped, not loaded**, so a hand-edited file
-  can't take the bridge down — and the good entries in it still survive the
-  next write.
-
-On top of that, a start does three things that keep it actually working rather
-than merely configured:
-
-- **It re-publishes slash commands whose definition changed.** A bot that only
-  registers a command when it is missing keeps whatever it published the first
-  time, so a sub-command added later is routed in code and never offered by
-  Discord. The two definitions are compared, and only a real difference is
-  written.
-- **It checks every restored bridge**, ten seconds in, once the guild caches
-  have settled: can it still see the Discord channel, and can it still see the
-  Telegram chat? A bridge that stopped working while the bot was down — a
-  deleted channel, a group that kicked it — is otherwise indistinguishable from
-  a quiet day.
-- **It says what it found**, in the log, in `/telegram status`, and by DM to
-  `DISCORD_OWNER_ID`. Nothing is ever pruned automatically: a guild can be
-  briefly unavailable during a Discord outage, and deleting someone's
-  configuration over a bad ten seconds is worse than telling them about it.
-## Disk I/O and the event loop
-
-A blocking write stops the loop: while it runs, no heartbeat is sent and
-nothing is relayed. Saves therefore go through
-[react/filesystem](https://github.com/reactphp/filesystem), which performs
-them off the loop — **where the platform allows it**, which is the part worth
-being precise about:
-
-| Backend | Available on | What actually happens |
-| --- | --- | --- |
-| `ext-uv` | Linux, macOS **and Windows** — `php_uv` publishes Windows DLLs | genuinely asynchronous |
-| `ext-eio` | POSIX only | genuinely asynchronous |
-| neither | the default on a stock Windows build | `react/filesystem` falls back to an adapter that calls `file_put_contents()` and wraps the result in an already-resolved promise: the *shape* of async with none of the behaviour |
-
-Because that last row is the common one on Windows, the bridge does not pretend
-otherwise. When no async backend is present it performs the write itself — and
-since it is going to block anyway, it blocks *properly*, with `fflush()` and
-`fsync()`, so a machine that loses power cannot come back to a zero-length
-config. `putContents()` cannot express that, and trading durability for a
-promise that resolves just as late would be a bad deal.
-
-Measured on a Windows host, saving this bot's configuration:
-
-```
-blocking backend (no ext-uv)      median 3.5 ms   p95 4.4 ms
-async backend (ext-uv / ext-eio)  median 0.07 ms  p95 0.15 ms
-```
-
-**Install [php-uv](https://pecl.php.net/package/uv) if you host on Windows and
-want the loop never to wait.** The bot logs which backend it picked at startup,
-so there is no guessing.
-
-Either way the *caller* never waits on the disk:
-
-- ``/telegram link`` answers from memory; the write is queued behind whatever is
-  already in flight.
-- Several changes in a row collapse into one write — a burst of 20 costs 4 disk
-  writes (config + backup, twice), not 40.
-- Shutdown flushes anything outstanding synchronously, because a queued write
-  would never run once the loop stops.
-
-Reads are the exception, deliberately: the configuration is loaded in the
-constructor, before `run()`, when there is no loop to block and starting a
-bridge that does not know what it bridges would be worse. `rename()` and
-`mkdir()` stay direct calls too — they move no bytes, and `react/filesystem`
-has no asynchronous equivalent of either.
-## What it deliberately doesn't do
-
-- **Deletions.** The Bot API sends a bot no update at all when a message is
-  deleted, so a deletion cannot be followed out of Telegram. Honouring it in
-  only one direction would be more confusing than not honouring it.
-- **Per-sender avatars from Telegram.** A user's profile photo is only
-  reachable through a token-bearing URL, so relayed messages carry names but
-  the webhook's own avatar.
-- **Edits older than the bridge remembers.** The message map is bounded and in
-  memory; past it, an edit arrives as a new message rather than a rewrite.
+**The stored state is compatible.** A `var/relay.json` written by the old bot is
+migrated on load into the connector-keyed shape — point the app's store path at
+it, or copy it across.
 
 ## Layout
 
 ```
-bot.php                         entrypoint
-src/TelegramRelay/
-  Relay.php                     the bot: Discord + Telegram on one loop
-  Config.php                    settings, from the environment only
-  Store.php                     JSON persistence for bridges (atomic writes)
-  Links.php                     the routing table — pure
-  Builders/
-    PanelBuilder.php            Components v2 panels; extends MessageBuilder
-  Modules/
-    Module.php                  what a feature looks like
-    Startup.php                 checks the restored bridges still work
-    RoutesCommands.php          sub-command registration + the permission gate
-    Configuration.php           /telegram
-    Controls.php                /tg — Telegram's features, from Discord
-    Bridge.php                  the relay itself, and loop prevention
-  Bridge/
-    TelegramGateway.php         update subscription, paced sending
-    WebhookDelivery.php         posting into Discord, with a fallback
-  Helpers/
-    MessageText.php             every decision about what text leaves this process
-    Media.php                   what a Telegram message is carrying
-    MessageMap.php              which message became which, for edits
-    ComponentRouter.php         button routing by custom_id
-    CommandSync.php             has the published command drifted from the code?
-    BridgeCheck.php             what the startup check found, in words
-    Filesystem.php              every disk access, behind promises
-    Permissions.php             who may reconfigure a bridge
-    RateLimiter.php             token bucket
+src/Bridge/Telegram/
+  TelegramConnector.php    the client, the long poll, edits and media
+  TelegramConfig.php       settings, from the environment only
+  TelegramGateway.php      the poll, and paced sending
+  TelegramText.php         HTML mode, the limits, naming a chat
+  Media.php                what a Telegram message was carrying
+  Panels.php               the buttons a panel carries
+  Actions/                 the commands themselves
 ```
-
-Sub-commands are registered as `listenCommand(['telegram', 'link'], …)`, so
-DiscordPHP's own `RegisteredCommand` does the routing and each handler is
-handed its own options — the same shape as an application command anywhere else
-in the DiscordPHP family.
-
-The logic worth testing is deliberately pure — `Links`, `MessageText`, `Media`,
-`MessageMap`, `RateLimiter`, `Store`, `PanelBuilder` — so routing, escaping,
-pacing and every rendered panel can be verified without a socket:
 
 ```bash
 composer test
