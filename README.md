@@ -34,7 +34,7 @@ The rest are optional:
 | --- | --- |
 | `TELEGRAM_OWNER_ID` | your numeric Telegram user id — the operator rung when you type a command in Telegram |
 | `TELEGRAM_PREFIX` | what chat commands start with; `!` by default, like Twitch |
-| `TELEGRAM_CA_BUNDLE` | a `cacert.pem`, for a PHP build (usually Windows) that has none |
+| `TELEGRAM_CA_BUNDLE` | a `cacert.pem`, for a PHP build (usually Windows) that has none. Unset, php.ini's `openssl.cafile` is used, then its `curl.cainfo`; a path there that is not a file is skipped. The log says which it picked. |
 | `TELEGRAM_BASE_URL` | a self-hosted Bot API server |
 | `TELEGRAM_POLL_TIMEOUT` | how long each long poll is held open, 1–50 seconds (default 50). Updates arrive as soon as there are any either way; shorter only means more requests |
 

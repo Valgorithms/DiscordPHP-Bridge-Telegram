@@ -181,6 +181,12 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
         $gateway = new TelegramGateway($this->telegram, $this->bot->getLoop(), $this->bot->getLogger());
         $this->adapter = new TelegramAdapter($this, $this->bot);
 
+        // Said up front, because a TLS failure says nothing about which
+        // certificates it was checked against.
+        $this->bot->getLogger()->info($this->config->caBundle === null
+            ? '[telegram] verifying TLS against the system\'s certificates (no TELEGRAM_CA_BUNDLE, and no usable one in php.ini)'
+            : sprintf('[telegram] verifying TLS with %s (from %s)', $this->config->caBundle, (string) $this->config->caBundleSource));
+
         $gateway->onMessage(fn (TelegramMessage $message) => $this->dispatch($message, edited: false));
         $gateway->onEdit(fn (TelegramMessage $message) => $this->dispatch($message, edited: true));
         $gateway->listen();

@@ -54,6 +54,57 @@ final class TelegramConfigTest extends TestCase
         $this->assertSame(25, $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_POLL_TIMEOUT' => '25'])->pollTimeout);
     }
 
+    public function testAnExplicitCaBundleWinsOverPhpIni(): void
+    {
+        $config = $this->configWithIni(
+            ['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_CA_BUNDLE' => 'D:/certs/mine.pem'],
+            ['openssl.cafile' => __FILE__],
+        );
+
+        $this->assertSame('D:/certs/mine.pem', $config->caBundle);
+        $this->assertSame('TELEGRAM_CA_BUNDLE', $config->caBundleSource);
+        $this->assertSame(['tls' => ['cafile' => 'D:/certs/mine.pem']], $config->socketOptions());
+    }
+
+    public function testWithoutOneTheBundlePhpIniNamesIsUsed(): void
+    {
+        $config = $this->configWithIni(['TELEGRAM_TOKEN' => '1:a'], ['openssl.cafile' => __FILE__]);
+
+        $this->assertSame(__FILE__, $config->caBundle);
+        $this->assertSame('openssl.cafile', $config->caBundleSource);
+    }
+
+    public function testCurlsBundleIsTheFallbackWindowsInstallsUsuallyHave(): void
+    {
+        // PHP's streams never read curl.cainfo, which is exactly why it is
+        // worth reading here.
+        $config = $this->configWithIni(['TELEGRAM_TOKEN' => '1:a'], ['openssl.cafile' => '', 'curl.cainfo' => __FILE__]);
+
+        $this->assertSame(__FILE__, $config->caBundle);
+        $this->assertSame('curl.cainfo', $config->caBundleSource);
+    }
+
+    public function testAPhpIniPathThatIsNotAFileIsPassedOver(): void
+    {
+        // A missing bundle fails every connection; no bundle at least lets the
+        // system's own certificates be tried.
+        $config = $this->configWithIni(
+            ['TELEGRAM_TOKEN' => '1:a'],
+            ['openssl.cafile' => __DIR__ . '/no-such.pem', 'curl.cainfo' => __FILE__],
+        );
+
+        $this->assertSame('curl.cainfo', $config->caBundleSource);
+    }
+
+    public function testNothingConfiguredAnywhereLeavesTlsAtItsDefaults(): void
+    {
+        $config = $this->configWithIni(['TELEGRAM_TOKEN' => '1:a'], []);
+
+        $this->assertNull($config->caBundle);
+        $this->assertNull($config->caBundleSource);
+        $this->assertSame([], $config->socketOptions());
+    }
+
     public function testThePrefixDefaultsToTheOtherChatsOne(): void
     {
         $this->assertSame('!', $this->config(['TELEGRAM_TOKEN' => '1:a'])->prefix);
@@ -92,5 +143,17 @@ final class TelegramConfigTest extends TestCase
     private function config(array $values): TelegramConfig
     {
         return TelegramConfig::fromEnvironment(Environment::fromArray($values));
+    }
+
+    /**
+     * @param array<string, string> $values
+     * @param array<string, string> $ini    php.ini directives, standing in for the real ones.
+     */
+    private function configWithIni(array $values, array $ini): TelegramConfig
+    {
+        return TelegramConfig::fromEnvironment(
+            Environment::fromArray($values),
+            static fn (string $directive): string|false => $ini[$directive] ?? false,
+        );
     }
 }
