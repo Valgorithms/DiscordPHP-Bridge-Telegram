@@ -45,6 +45,54 @@ final class TelegramConfigTest extends TestCase
         );
     }
 
+    public function testAUsableBaseUrlHasNothingWrongWithIt(): void
+    {
+        foreach ([null, 'http://localhost:8081', 'HTTPS://api.example.test', 'https://api.example.test/'] as $value) {
+            $values = ['TELEGRAM_TOKEN' => '1:a'] + ($value === null ? [] : ['TELEGRAM_BASE_URL' => $value]);
+
+            $this->assertNull($this->config($values)->baseUrlProblem(), (string) $value);
+        }
+    }
+
+    public function testATrailingSlashIsDroppedSoThePathDoesNotDouble(): void
+    {
+        $this->assertSame(
+            'http://localhost:8081',
+            $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_BASE_URL' => 'http://localhost:8081/'])->baseUrl,
+        );
+    }
+
+    public function testABaseUrlWithoutASchemeIsNamed(): void
+    {
+        // The local Bot API server prints its address without one, and ReactPHP
+        // then refuses every request with "Invalid request URL given".
+        $problem = $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_BASE_URL' => 'localhost:8081'])->baseUrlProblem();
+
+        $this->assertNotNull($problem);
+        $this->assertStringContainsString('TELEGRAM_BASE_URL', $problem);
+        $this->assertStringContainsString("'localhost:8081'", $problem);
+        $this->assertStringContainsString('http://', $problem);
+    }
+
+    public function testACommentAfterTheValueIsRecognisedAsOne(): void
+    {
+        foreach (['# local Bot API server', 'http://localhost:8081 # local'] as $value) {
+            $problem = $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_BASE_URL' => $value])->baseUrlProblem();
+
+            $this->assertNotNull($problem, $value);
+            $this->assertStringContainsString('comment', $problem, $value);
+        }
+    }
+
+    public function testATokenPastedIntoTheBaseUrlIsNotRepeated(): void
+    {
+        $token = '123456789:AAHfiqksKZ8WmR2zSjiQ7_v4TMAKdiHm9T0';
+        $problem = $this->config(['TELEGRAM_TOKEN' => $token, 'TELEGRAM_BASE_URL' => 'api.telegram.org/bot' . $token])->baseUrlProblem();
+
+        $this->assertNotNull($problem);
+        $this->assertStringNotContainsString($token, $problem);
+    }
+
     public function testTheLongPollTimeoutStaysWithinWhatTelegramAllows(): void
     {
         // Zero would turn the long poll into a busy loop of short ones.

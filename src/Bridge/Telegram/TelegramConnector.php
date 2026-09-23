@@ -178,6 +178,15 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
      */
     public function start(): PromiseInterface
     {
+        // Refused here, by name, instead of by ReactPHP on the first request.
+        // Failing to start keeps the other connectors running and stops the
+        // bot pruning /telegram; throwing from boot() would take the whole
+        // bot down.
+        $problem = $this->config->baseUrlProblem();
+        if ($problem !== null) {
+            return reject(new \RuntimeException($problem));
+        }
+
         $gateway = new TelegramGateway($this->telegram, $this->bot->getLoop(), $this->bot->getLogger());
         $this->adapter = new TelegramAdapter($this, $this->bot);
 

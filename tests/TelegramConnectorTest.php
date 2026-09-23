@@ -63,6 +63,16 @@ final class TelegramConnectorTest extends TestCase
         $this->http = new FakeHttp();
         $this->http->answers['getMe'] = ['id' => 123456789, 'is_bot' => true, 'first_name' => 'Bridge', 'username' => 'BridgeBot'];
 
+        $this->connect();
+    }
+
+    /**
+     * Builds the bot and the connector under test.
+     *
+     * @param array<string, string> $settings Telegram settings on top of the defaults.
+     */
+    private function connect(array $settings = []): void
+    {
         $logged = &$this->logged;
         $logger = new class ($logged) extends AbstractLogger {
             /** @param list<string> $lines */
@@ -84,7 +94,7 @@ final class TelegramConnectorTest extends TestCase
         );
 
         $this->connector = new TelegramConnector(
-            TelegramConfig::fromEnvironment(Environment::fromArray([
+            TelegramConfig::fromEnvironment(Environment::fromArray($settings + [
                 'TELEGRAM_TOKEN' => FakeHttp::TOKEN,
                 'TELEGRAM_OWNER_ID' => '777',
             ])),
@@ -131,6 +141,19 @@ final class TelegramConnectorTest extends TestCase
         $this->assertStringNotContainsString(FakeHttp::TOKEN, $error->getMessage());
         $this->assertNull($error->getPrevious());
         $this->assertNoTokenLogged();
+    }
+
+    public function testAnUnusableBaseUrlStopsTheStartAndNamesTheSetting(): void
+    {
+        // Otherwise every request fails with ReactPHP's "Invalid request URL
+        // given", which says nothing about which setting is wrong.
+        $this->connect(['TELEGRAM_BASE_URL' => 'localhost:8081']);
+
+        $error = $this->settle($this->connector->start());
+
+        $this->assertInstanceOf(\RuntimeException::class, $error);
+        $this->assertStringContainsString('TELEGRAM_BASE_URL', $error->getMessage());
+        $this->assertSame([], $this->http->callsTo('getMe'));
     }
 
     // ── Sending ────────────────────────────────────────────────────────

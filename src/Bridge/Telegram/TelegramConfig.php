@@ -66,11 +66,13 @@ final class TelegramConfig
     public static function fromEnvironment(Environment $environment, ?callable $ini = null): self
     {
         [$caBundle, $caBundleSource] = self::caBundle($environment, $ini ?? ini_get(...));
+        $baseUrl = $environment->get('TELEGRAM_BASE_URL');
 
         return new self(
             token: $environment->require('TELEGRAM_TOKEN'),
-            // For a self-hosted Bot API server. Unset means Telegram's own.
-            baseUrl: $environment->get('TELEGRAM_BASE_URL'),
+            // For a self-hosted Bot API server. Unset means Telegram's own. The
+            // client appends "/bot<token>/…", so a trailing slash would double.
+            baseUrl: $baseUrl === null ? null : rtrim($baseUrl, '/'),
             // Long polling: Telegram answers as soon as there is an update, so
             // this only bounds how long a quiet connection is held. Shorter
             // means more requests, never faster delivery.
@@ -115,6 +117,47 @@ final class TelegramConfig
         }
 
         return [null, null];
+    }
+
+    /**
+     * Why `TELEGRAM_BASE_URL` cannot be used, or `null` when it can or is unset.
+     *
+     * Checked before the first request rather than left to fail there: a URL
+     * without a scheme reaches ReactPHP, which refuses it with "Invalid request
+     * URL given" and names neither the setting nor the value. The value is
+     * repeated with any token in it masked, in case a whole method URL was
+     * pasted in.
+     */
+    public function baseUrlProblem(): ?string
+    {
+        if ($this->baseUrl === null) {
+            return null;
+        }
+
+        $parts = parse_url($this->baseUrl);
+
+        if (is_array($parts)
+            && in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)
+            && ($parts['host'] ?? '') !== ''
+            && preg_match('/\s/', $this->baseUrl) !== 1) {
+            return null;
+        }
+
+        $shown = TelegramText::redact($this->baseUrl);
+
+        // `KEY=value # note` keeps the note: the .env reader only skips lines
+        // that start with one.
+        if (preg_match('/(^|\s)#/', $this->baseUrl) === 1) {
+            return sprintf(
+                "TELEGRAM_BASE_URL is '%s': a comment written after a value in .env is kept as part of the value. Put the comment on a line of its own.",
+                $shown,
+            );
+        }
+
+        return sprintf(
+            "TELEGRAM_BASE_URL must be an http:// or https:// URL, such as http://localhost:8081 for a local Bot API server, but it is '%s'. Leave it empty to use Telegram's own server.",
+            $shown,
+        );
     }
 
     /** A numeric user id, or `null` for anything else — an `@name` can change hands. */
