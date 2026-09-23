@@ -66,7 +66,9 @@ final class TelegramText
             $message->roleNames,
         )));
 
-        if ($body === '' && $message->media === []) {
+        // Media counts only when there is a link to show for it; a file with
+        // no URL would otherwise produce a message that is just a name.
+        if ($body === '' && $message->mediaUrls() === []) {
             return null;
         }
 
@@ -83,6 +85,31 @@ final class TelegramText
         $room = max(1, $limit - MessageText::length($prefix) - MessageText::length(strip_tags($tail)));
 
         return $prefix . self::escapeHtml(MessageText::truncate($body, $room)) . $tail;
+    }
+
+    /**
+     * Removes the bot token from text that is about to be logged or shown.
+     *
+     * Every Bot API URL has the token in its path — `/bot<id>:<secret>/…` and
+     * `/file/bot<id>:<secret>/…` — so any error that quotes one quotes the
+     * credential. TelegramPHP is careful not to, but the transport underneath
+     * it makes no such promise, and the cost of trusting it once is the whole
+     * bot. Anything Telegram-side that reaches a log line or a reply passes
+     * through here first.
+     */
+    public static function redact(string $text): string
+    {
+        return preg_replace('/bot\d{3,20}:[A-Za-z0-9_-]{20,}/', 'bot<token>', $text) ?? '';
+    }
+
+    /**
+     * An exception safe to hand onwards: the message redacted, and no
+     * `previous`, since a logger that renders the chain would print the
+     * original unredacted.
+     */
+    public static function redacted(\Throwable $e): \RuntimeException
+    {
+        return new \RuntimeException(self::redact($e->getMessage()), (int) $e->getCode());
     }
 
     /**

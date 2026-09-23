@@ -15,11 +15,11 @@ namespace Bridge\Telegram;
 
 use Bridge\Bot;
 use Bridge\Builders\PanelBuilder;
+use Bridge\Command\Access;
 use Bridge\Modules\Module;
 use Bridge\Room;
 use Bridge\Support\MessageText;
 use Bridge\Support\Permissions;
-use Discord\Parts\Guild\Guild;
 use Discord\Parts\Interactions\Interaction;
 use React\Promise\PromiseInterface;
 
@@ -36,6 +36,11 @@ use React\Promise\PromiseInterface;
  * refreshes what it was showing rather than whatever that channel points at
  * now. That is also what makes it survive a restart: nothing is remembered
  * between the panel and the press except what is written on the button.
+ *
+ * What the button says is not the whole check, though. A panel outlives the
+ * bridge it was drawn for, and a server that has since unlinked a chat must
+ * not keep minting its invite links from an old message — so every press is
+ * held to a chat the pressing server bridges *now*.
  *
  * @author Valithor Obsidion <valithor@valgorithms.com>
  */
@@ -92,11 +97,11 @@ final class Panels implements Module
      */
     private function invite(Bot $bot, Interaction $interaction, ?string $chatId): PromiseInterface
     {
-        $guild = $interaction->guild;
+        $access = Permissions::accessForInteraction($interaction, $bot->getConfig()->discordOwnerId);
 
-        if (! $guild instanceof Guild || ! Permissions::mayConfigure($interaction, $guild)) {
+        if (! $access->satisfies(Access::Administrator)) {
             return $interaction->respondWithMessage(
-                PanelBuilder::error('You need **Manage Server** to mint an invite link.'),
+                PanelBuilder::error(sprintf('Minting an invite link is limited to %s.', Access::Administrator->label())),
                 true,
             );
         }
@@ -133,9 +138,8 @@ final class Panels implements Module
             );
         }
 
-        $chat = $chatId ?? $bot->getStore()
-            ->links(TelegramConnector::NAME)
-            ->targetFor((string) $interaction->channel_id);
+        $links = $bot->getStore()->links(TelegramConnector::NAME);
+        $chat = $chatId ?? $links->targetFor((string) $interaction->channel_id);
 
         if ($chat === null || $chat === '') {
             return $interaction->respondWithMessage(
@@ -143,6 +147,16 @@ final class Panels implements Module
                     "This channel isn't bridged to a Telegram chat.\n"
                     . 'Someone with **Manage Server** can link it with `/telegram here`.',
                 ),
+                true,
+            );
+        }
+
+        $guildId = (string) ($interaction->guild_id ?? '');
+        $bridgedHere = array_map(strval(...), array_values($guildId === '' ? [] : $links->forGuild($guildId)));
+
+        if (! in_array((string) $chat, $bridgedHere, true)) {
+            return $interaction->respondWithMessage(
+                PanelBuilder::warning('That chat is no longer bridged in this server, so this panel cannot act on it.'),
                 true,
             );
         }
@@ -158,7 +172,7 @@ final class Panels implements Module
      */
     private function explain(\Throwable $e): PanelBuilder
     {
-        $reason = trim(preg_replace('#https?://\S+#', '(url)', $e->getMessage()) ?? '');
+        $reason = trim(preg_replace('#https?://\S+#', '(url)', TelegramText::redact($e->getMessage())) ?? '');
 
         return PanelBuilder::error(match (true) {
             str_contains($reason, 'not enough rights'),

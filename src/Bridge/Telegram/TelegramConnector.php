@@ -28,11 +28,11 @@ use Bridge\Room;
 use Bridge\Support\MessageText;
 use Bridge\Telegram\Actions\ControlActions;
 use React\Promise\PromiseInterface;
-
-use function React\Promise\resolve;
-
 use Telegram\Parts\Message as TelegramMessage;
 use Telegram\Telegram;
+
+use function React\Promise\reject;
+use function React\Promise\resolve;
 
 /**
  * Telegram, as far as the bridge is concerned.
@@ -54,11 +54,13 @@ use Telegram\Telegram;
  *
  * ## The token in the URL
  *
- * A Telegram file URL contains the bot token in its path. That is Telegram's
- * design, not a mistake to be worked around, and it means such a URL must never
- * be logged, never be put in an exception message that might be, and never be
- * posted into Discord. The bytes are downloaded and re-uploaded instead; see
- * {@see describe()}, which hands the core `null` for the URL every time.
+ * Every Bot API URL contains the bot token, and so does every file URL. That
+ * is Telegram's design, not a mistake to be worked around, and it means such a
+ * URL must never be logged, never be put in an exception message that might
+ * be, and never be posted into Discord. Files are downloaded and re-uploaded
+ * instead — see {@see describe()}, which hands the core `null` for the URL
+ * every time — and every error leaving this class passes through
+ * {@see TelegramText::redacted()}.
  *
  * @author Valithor Obsidion <valithor@valgorithms.com>
  */
@@ -67,20 +69,39 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
     /** The name this connector is addressed by, in the store and in chat. */
     public const NAME = 'telegram';
 
+    /** The updates the bridge acts on; nothing else is worth the bandwidth. */
+    public const UPDATES = ['message', 'edited_message', 'channel_post', 'edited_channel_post'];
+
+    /** How many sent photos to remember, so an edit knows to rewrite a caption. */
+    private const REMEMBER_CAPTIONS = 500;
+
     private Bot $bot;
 
     private Telegram $telegram;
 
     private ?TelegramGateway $gateway = null;
 
+    private ?TelegramAdapter $adapter = null;
+
     /** @var list<callable(Incoming): void> */
     private array $handlers = [];
 
-    /** @var array<string, array<string, mixed>|null> chat id => cached chat row. */
-    private array $chats = [];
+    /** @var array<string, true> Chats the bot could last see, for the startup check. */
+    private array $seen = [];
 
-    public function __construct(private readonly TelegramConfig $config)
-    {
+    /** @var array<string, true> "chat:message" for everything sent as a photo, whose text is a caption. */
+    private array $captioned = [];
+
+    /**
+     * @param array<string, mixed> $clientOptions Extra TelegramPHP options, merged
+     *                                            over the ones built from the
+     *                                            config — a different HTTP
+     *                                            driver, or a fake one in tests.
+     */
+    public function __construct(
+        private readonly TelegramConfig $config,
+        private readonly array $clientOptions = [],
+    ) {
     }
 
     // ── Identity ───────────────────────────────────────────────────────
@@ -98,7 +119,7 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
     /** Telegram takes 4096 characters and renders its own HTML, not markdown. */
     public function surface(): Surface
     {
-        return new Surface(self::NAME, 'Telegram', TelegramText::LIMIT, markdown: false, lines: true);
+        return new Surface(self::NAME, 'Telegram', TelegramText::LIMIT, markdown: false, lines: true, prefix: $this->config->prefix);
     }
 
     public function getTelegram(): Telegram
@@ -136,33 +157,56 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
             // Windows PHP usually has no CA bundle configured, and TLS to
             // api.telegram.org fails outright without one.
             'socket_options' => $this->config->socketOptions(),
+            'poll_timeout' => $this->config->pollTimeout,
+            'allowed_updates' => self::UPDATES,
         ];
 
         if ($this->config->baseUrl !== null) {
             $options['base_url'] = $this->config->baseUrl;
         }
 
-        $this->telegram = new Telegram($options);
+        $this->telegram = new Telegram([...$options, ...$this->clientOptions]);
     }
 
-    public function start(): void
+    /**
+     * Identifies the bot and starts the long poll.
+     *
+     * The listeners go on first, so nothing that arrives in the first poll is
+     * missed. A failure — a revoked token, no route to Telegram — is handed
+     * back redacted, and the core reports this connector as down without
+     * taking the others with it.
+     */
+    public function start(): PromiseInterface
     {
-        $this->gateway = new TelegramGateway(
-            $this->telegram,
-            $this->bot->getLoop(),
-            $this->bot->getLogger(),
+        $gateway = new TelegramGateway($this->telegram, $this->bot->getLoop(), $this->bot->getLogger());
+        $this->adapter = new TelegramAdapter($this, $this->bot);
+
+        $gateway->onMessage(fn (TelegramMessage $message) => $this->dispatch($message, edited: false));
+        $gateway->onEdit(fn (TelegramMessage $message) => $this->dispatch($message, edited: true));
+        $gateway->listen();
+
+        $this->gateway = $gateway;
+
+        return $this->telegram->start()->then(
+            function ($me): bool {
+                $this->bot->getLogger()->info(sprintf(
+                    '[telegram] polling as @%s; %d bridge(s) configured, commands start with %s',
+                    (string) ($me->username ?? '?'),
+                    $this->bot->getStore()->links(self::NAME)->count(),
+                    $this->config->prefix,
+                ));
+
+                return true;
+            },
+            function (\Throwable $e): never {
+                $this->gateway = null;
+
+                throw TelegramText::redacted($e);
+            },
         );
-
-        $this->gateway->onMessage(fn (TelegramMessage $message) => $this->dispatch($message, edited: false));
-        $this->gateway->onEdit(fn (TelegramMessage $message) => $this->dispatch($message, edited: true));
-        $this->gateway->listen();
-
-        $this->bot->getLogger()->info(sprintf(
-            '[telegram] polling; %d bridge(s) configured',
-            $this->bot->getStore()->links(self::NAME)->count(),
-        ));
     }
 
+    /** Stops the long poll. The loop is Discord's, and keeps running. */
     public function stop(): void
     {
         $this->telegram->stop();
@@ -184,22 +228,14 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
     }
 
     /**
-     * Every bridged chat the bot can actually see.
+     * Every bridged chat the bot could see when it last looked.
      *
-     * Derived from what the API answers rather than from the configuration: the
-     * point of the startup check is to catch the two disagreeing.
+     * Derived from what the API answered rather than from the configuration:
+     * the point of the startup check is to catch the two disagreeing.
      */
     public function joined(): array
     {
-        $joined = [];
-
-        foreach ($this->chats as $id => $chat) {
-            if ($chat !== null) {
-                $joined[] = (string) $id;
-            }
-        }
-
-        return $joined;
+        return array_map(strval(...), array_keys($this->seen));
     }
 
     public function queued(): int
@@ -212,21 +248,62 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
         return TelegramText::normalizeChatId($input);
     }
 
-    /** @return PromiseInterface<?Room> */
+    /**
+     * Looks a chat up, by id or `@username`.
+     *
+     * The room is keyed by the numeric id whichever was typed: a username can
+     * be changed or given away, and a bridge stored under one would follow it.
+     *
+     * Not cached. Nothing calls this per message, and a cached "not found"
+     * would keep refusing a group for as long as the bot runs — including the
+     * one somebody has just added it to, which is exactly when `link` is
+     * retried.
+     *
+     * @return PromiseInterface<?Room>
+     */
     public function resolve(string $target): PromiseInterface
     {
-        return $this->chat($target)->then(static fn (?array $chat): ?Room => $chat === null ? null : new Room(
-            id: $chat['id'],
-            label: $chat['title'],
-            url: $chat['username'] === '' ? null : 'https://t.me/' . $chat['username'],
-            kind: $chat['type'],
-            members: $chat['members'],
-            description: $chat['description'] === '' ? null : $chat['description'],
-        ));
+        return $this->telegram->getChat($target)->then(
+            function ($chat) use ($target): ?Room {
+                if ($chat === null) {
+                    return null;
+                }
+
+                $id = (string) ($chat->id ?? $target);
+                $this->seen[$id] = true;
+                $username = (string) ($chat->username ?? '');
+                $description = (string) ($chat->description ?? '');
+
+                return new Room(
+                    id: $id,
+                    label: (string) ($chat->title ?? ($username !== '' ? '@' . $username : $id)),
+                    url: $username === '' ? null : 'https://t.me/' . $username,
+                    kind: (string) ($chat->type ?? 'chat'),
+                    description: $description === '' ? null : $description,
+                );
+            },
+            function (\Throwable $e) use ($target): ?Room {
+                // Telegram's answer for a chat that does not exist and for one
+                // the bot has been removed from. Anything else — a timeout, a
+                // 5xx — is not proof of either.
+                if (self::isGone($e)) {
+                    unset($this->seen[$target]);
+
+                    return null;
+                }
+
+                throw TelegramText::redacted($e);
+            },
+        );
     }
 
     // ── Messages ───────────────────────────────────────────────────────
 
+    /**
+     * Sends text, escaped unless `html` says it is already Telegram HTML.
+     *
+     * @param array{html?: bool, reply_to?: int|string|null} $options
+     */
     public function send(string $target, string $text, array $options = []): PromiseInterface
     {
         if (trim($text) === '' || $this->gateway === null) {
@@ -235,10 +312,13 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
 
         // Anything this bot composes itself is plain text as far as Telegram's
         // HTML mode is concerned, so it is escaped rather than trusted: an API
-        // error quoting a `<tag>` would otherwise be a parse failure.
-        $html = ($options['html'] ?? false) === true ? $text : TelegramText::escapeHtml($text);
+        // error quoting a `<tag>` would otherwise be a parse failure. Cut to
+        // length first — cutting afterwards can split an `&amp;` in half.
+        $html = ($options['html'] ?? false) === true
+            ? $text
+            : TelegramText::escapeHtml(MessageText::truncate($text, TelegramText::LIMIT));
 
-        return $this->gateway->send($target, MessageText::truncate($html, TelegramText::LIMIT), $options)
+        return $this->gateway->send($target, $html, ['reply_to' => $options['reply_to'] ?? null])
             ->then(static fn ($message): ?string => self::messageId($message));
     }
 
@@ -251,14 +331,31 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
             : $this->send($target, $html, ['html' => true]);
     }
 
-    public function edit(string $target, string $messageId, string $text): PromiseInterface
+    /**
+     * Rewrites a relayed message in place.
+     *
+     * A photo's text is its caption, which is a different call with a quarter
+     * of the room, so what was sent as a photo is remembered.
+     */
+    public function edit(string $target, string $messageId, Outgoing $message): PromiseInterface
     {
-        return $this->telegram->editMessageText(
-            chat_id: $target,
-            message_id: (int) $messageId,
-            text: MessageText::truncate($text, TelegramText::LIMIT),
-            parse_mode: 'HTML',
-        );
+        if ($this->gateway === null) {
+            return reject(new \RuntimeException('Telegram is not connected.'));
+        }
+
+        $captioned = isset($this->captioned[$target . ':' . $messageId]);
+        $photo = $captioned ? self::firstPhoto($message) : null;
+
+        $html = $captioned
+            ? $this->caption($photo === null ? $message : $message->withoutMedia($photo))
+            : TelegramText::compose($message);
+
+        if ($html === null) {
+            // Telegram will not blank a message; leaving it is the best there is.
+            return resolve(null);
+        }
+
+        return $this->gateway->edit($target, (int) $messageId, $html, $captioned);
     }
 
     public function sendMedia(string $target, Attachment $media, ?Outgoing $message = null): PromiseInterface
@@ -269,15 +366,60 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
             return reject(new \RuntimeException('not a photo Telegram can fetch'));
         }
 
-        // A caption has a quarter of a message's room, so it is composed to
-        // that limit rather than truncated from one built for the other.
-        $caption = $message === null
-            ? null
-            : TelegramText::compose($message, TelegramText::CAPTION_LIMIT);
+        // Without the photo itself, which would otherwise also be linked in
+        // its own caption.
+        $caption = $message === null ? null : $this->caption($message->withoutMedia($media));
 
         return $this->gateway
             ->sendPhoto($target, $media->url, $caption)
-            ->then(static fn ($sent): ?string => self::messageId($sent));
+            ->then(function ($sent) use ($target): ?string {
+                $id = self::messageId($sent);
+
+                if ($id !== null) {
+                    if (count($this->captioned) >= self::REMEMBER_CAPTIONS) {
+                        unset($this->captioned[array_key_first($this->captioned)]);
+                    }
+
+                    $this->captioned[$target . ':' . $id] = true;
+                }
+
+                return $id;
+            });
+    }
+
+    /**
+     * Downloads a file somebody sent in Telegram, for re-uploading to Discord.
+     *
+     * The bytes, never the URL: the URL has the token in it. Declined up front
+     * when the file is known to be too big for Discord, and after the download
+     * when it turns out to be — Telegram often omits the size.
+     */
+    public function fetchMedia(Attachment $media): PromiseInterface
+    {
+        if ($media->id === null || $media->id === '') {
+            return resolve(null);
+        }
+
+        // Discord's limit is the lower of the two, so it is the one that matters.
+        if ($media->size !== null && $media->size > Media::DISCORD_UPLOAD_LIMIT) {
+            return resolve(null);
+        }
+
+        return $this->telegram->downloadFile($media->id)->then(
+            static function ($bytes) use ($media): ?array {
+                $bytes = (string) $bytes;
+
+                if ($bytes === '' || strlen($bytes) > Media::DISCORD_UPLOAD_LIMIT) {
+                    return null;
+                }
+
+                return [
+                    'filename' => Media::safeFilename($media->name ?? ($media->isImage() ? 'photo.jpg' : 'file.bin')),
+                    'content' => $bytes,
+                ];
+            },
+            static fn (\Throwable $e) => throw TelegramText::redacted($e),
+        );
     }
 
     public function onIncoming(callable $handler): void
@@ -305,7 +447,8 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
     // ── Internals ──────────────────────────────────────────────────────
 
     /**
-     * Turns a TelegramPHP message into the core's own shape.
+     * Turns a TelegramPHP message into the core's own shape, running it as a
+     * command first if it is one.
      *
      * The chat title is remembered on the way past, so a listing can name a
      * group that has since been renamed without going and asking.
@@ -318,25 +461,36 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
             return;
         }
 
+        $own = (string) ($message->from?->id ?? '') === (string) $this->config->botId();
+
+        // A command is answered once, when it is sent. Editing one is not
+        // asking again, and answering the edit would run it twice.
+        if (! $own && ! $edited) {
+            $this->adapter?->handle($message);
+        }
+
         $title = (string) ($message->chat->title ?? $message->chat->username ?? '');
 
         if ($title !== '') {
             $this->bot->getStore()->rememberLabel(self::NAME, $chatId, $title);
         }
 
-        $raw = $message->jsonSerialize();
-        $media = $this->describe(is_array($raw) ? $raw : []);
+        $media = $this->describe(self::raw($message));
+        $text = (string) ($message->text ?? $message->caption ?? '');
 
         $incoming = new Incoming(
             target: $chatId,
             author: $this->author($message),
             authorId: (string) ($message->from?->id ?? '') ?: null,
-            text: (string) ($message->text ?? $message->caption ?? ''),
+            // Without a trailing "@thisbot" on the first word, so the relay
+            // recognises "/twitch@thisbot title" as the command it is.
+            text: $this->adapter?->unaddressed($text) ?? $text,
             id: (string) ($message->message_id ?? '') ?: null,
             quoted: $this->quoted($message),
             media: $media === null ? [] : [$media],
             edited: $edited,
-            own: (string) ($message->from?->id ?? '') === (string) $this->config->botId(),
+            own: $own,
+            handle: $message->from?->username === null ? null : (string) $message->from->username,
         );
 
         foreach ($this->handlers as $handler) {
@@ -350,8 +504,8 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
      * The URL is always `null`, and that is the important part: turning a
      * `file_id` into a link means asking the Bot API, and the link it returns
      * has the bot token in its path. Handing the core `null` means the relay
-     * names the file rather than publishing a credential into a Discord
-     * channel.
+     * names the file — or asks {@see fetchMedia()} for the bytes — rather than
+     * publishing a credential into a Discord channel.
      *
      * @param array<string, mixed> $raw
      */
@@ -366,9 +520,19 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
         return new Attachment(
             kind: $described['kind'] === 'photo' ? Attachment::IMAGE : Attachment::FILE,
             url: null,
-            id: $described['file_id'],
+            // Only when the bytes may be fetched: a file too big for Discord is
+            // named instead.
+            id: $described['mirrorable'] ? $described['file_id'] : null,
             name: $described['filename'] ?? $described['label'],
+            size: $described['size'],
         );
+    }
+
+    /** A photo's caption: the relayed text, or at least who sent it. */
+    private function caption(Outgoing $message): string
+    {
+        return TelegramText::compose($message, TelegramText::CAPTION_LIMIT)
+            ?? '<b>' . TelegramText::escapeHtml(trim(MessageText::sanitize($message->author))) . '</b>';
     }
 
     private function author(TelegramMessage $message): string
@@ -411,48 +575,56 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
         $what = trim((string) ($replied->text ?? $replied->caption ?? ''));
 
         if ($what === '') {
-            $raw = $replied->jsonSerialize();
-            $what = Media::describe(is_array($raw) ? $raw : [])['label'] ?? 'a message';
+            $what = Media::describe(self::raw($replied))['label'] ?? 'a message';
         }
 
         return sprintf('**%s:** %s', $this->author($replied), str_replace("\n", ' ', $what));
     }
 
     /**
-     * One chat row, cached by id — negatives included, so a group the bot was
-     * removed from is not re-queried on every relayed message.
+     * A message as plain arrays, all the way down.
      *
-     * @return PromiseInterface<array<string, mixed>|null>
+     * `jsonSerialize()` is one level deep: the sizes of a photo come back as
+     * `PhotoSize` parts, not arrays, and {@see Media::describe()} — which reads
+     * arrays — finds no file in them at all. Encoding runs every nested
+     * part's own serialisation.
+     *
+     * @return array<string, mixed>
      */
-    private function chat(string $target): PromiseInterface
+    private static function raw(TelegramMessage $message): array
     {
-        if (array_key_exists($target, $this->chats)) {
-            return resolve($this->chats[$target]);
+        $raw = json_decode((string) json_encode($message), true);
+
+        return is_array($raw) ? $raw : [];
+    }
+
+    /** The first picture Telegram was handed by URL — the one a photo was sent as. */
+    private static function firstPhoto(Outgoing $message): ?Attachment
+    {
+        foreach ($message->media as $item) {
+            if ($item->isImage() && $item->url !== null && MessageText::isRelayableUrl($item->url)) {
+                return $item;
+            }
         }
 
-        return $this->telegram->getChat($target)->then(
-            function ($chat) use ($target): ?array {
-                $row = $chat === null ? null : [
-                    'id' => (string) ($chat->id ?? $target),
-                    'title' => (string) ($chat->title ?? $chat->username ?? $target),
-                    'username' => (string) ($chat->username ?? ''),
-                    'type' => (string) ($chat->type ?? 'chat'),
-                    'description' => (string) ($chat->description ?? ''),
-                    'members' => null,
-                ];
+        return null;
+    }
 
-                return $this->chats[$target] = $row;
-            },
-            function (\Throwable $e) use ($target): ?array {
-                // Never log the exception's own message unexamined: a Telegram
-                // error can quote a URL, and a Telegram URL carries the token.
-                $this->bot->getLogger()->debug('[telegram] could not read chat ' . $target);
+    /**
+     * Whether an error means the chat is not there for this bot: it does not
+     * exist, or the bot was removed from it.
+     */
+    private static function isGone(\Throwable $e): bool
+    {
+        $message = strtolower($e->getMessage());
 
-                // A failed lookup is not proof the chat is gone, so it is not
-                // cached as one.
-                return null;
-            },
-        );
+        foreach (['chat not found', 'bot was kicked', 'bot is not a member', 'have no rights to send', 'forbidden'] as $needle) {
+            if (str_contains($message, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** The message id out of whatever TelegramPHP handed back. */

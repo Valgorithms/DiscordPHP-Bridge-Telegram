@@ -45,12 +45,27 @@ final class TelegramConfigTest extends TestCase
         );
     }
 
-    public function testThePollIntervalHasAFloor(): void
+    public function testTheLongPollTimeoutStaysWithinWhatTelegramAllows(): void
     {
-        // A zero or negative interval would busy-loop the poller.
-        $this->assertSame(1.0, $this->config(['TELEGRAM_TOKEN' => '1:a'])->pollInterval);
-        $this->assertSame(0.5, $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_POLL_INTERVAL' => '0'])->pollInterval);
-        $this->assertSame(2.5, $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_POLL_INTERVAL' => '2.5'])->pollInterval);
+        // Zero would turn the long poll into a busy loop of short ones.
+        $this->assertSame(50, $this->config(['TELEGRAM_TOKEN' => '1:a'])->pollTimeout);
+        $this->assertSame(1, $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_POLL_TIMEOUT' => '0'])->pollTimeout);
+        $this->assertSame(50, $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_POLL_TIMEOUT' => '600'])->pollTimeout);
+        $this->assertSame(25, $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_POLL_TIMEOUT' => '25'])->pollTimeout);
+    }
+
+    public function testThePrefixDefaultsToTheOtherChatsOne(): void
+    {
+        $this->assertSame('!', $this->config(['TELEGRAM_TOKEN' => '1:a'])->prefix);
+        $this->assertSame('?', $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_PREFIX' => '?'])->prefix);
+    }
+
+    public function testTheOwnerIsANumericIdOrNobody(): void
+    {
+        // A username can be given up and claimed by somebody else; an id cannot.
+        $this->assertSame('777', $this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_OWNER_ID' => '777'])->ownerId);
+        $this->assertNull($this->config(['TELEGRAM_TOKEN' => '1:a', 'TELEGRAM_OWNER_ID' => '@someone'])->ownerId);
+        $this->assertNull($this->config(['TELEGRAM_TOKEN' => '1:a'])->ownerId);
     }
 
     public function testTheBotIdIsReadOffTheTokenRatherThanFetched(): void

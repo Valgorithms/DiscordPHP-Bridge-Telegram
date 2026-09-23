@@ -27,6 +27,35 @@ use PHPUnit\Framework\TestCase;
  */
 final class TelegramTextTest extends TestCase
 {
+    public function testTheTokenIsRedactedWhereverItAppears(): void
+    {
+        $token = '123456789:AAHfiqksKZ8WmR2zSjiQ7_v4TMAKdiHm9T0';
+
+        $this->assertSame(
+            'GET https://api.telegram.org/file/bot<token>/photos/file_1.jpg failed',
+            TelegramText::redact('GET https://api.telegram.org/file/bot' . $token . '/photos/file_1.jpg failed'),
+        );
+        $this->assertStringNotContainsString($token, TelegramText::redact('POST /bot' . $token . '/sendMessage'));
+        $this->assertSame('chat not found', TelegramText::redact('chat not found'));
+    }
+
+    public function testARedactedExceptionCarriesNoChain(): void
+    {
+        $original = new \RuntimeException('bot123456:AAHfiqksKZ8WmR2zSjiQ7_v4TMAKdiHm9T0 refused', 400, new \LogicException('inner'));
+        $safe = TelegramText::redacted($original);
+
+        $this->assertSame('bot<token> refused', $safe->getMessage());
+        $this->assertNull($safe->getPrevious());
+    }
+
+    public function testMediaWithNoLinkIsNotAMessageOnItsOwn(): void
+    {
+        $this->assertNull(TelegramText::compose(new \Bridge\Message\Outgoing(
+            author: 'Somebody',
+            media: [new \Bridge\Message\Media(\Bridge\Message\Media::IMAGE, null, 'file-id')],
+        )));
+    }
+
     // ── HTML mode ──────────────────────────────────────────────────────
 
     public function testEscapingCoversExactlyTelegramsThreeCharacters(): void

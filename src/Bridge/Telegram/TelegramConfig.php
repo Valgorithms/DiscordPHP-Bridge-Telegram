@@ -31,11 +31,27 @@ use Bridge\Environment;
  */
 final class TelegramConfig
 {
+    /** What commands typed in a Telegram chat start with. */
+    public const DEFAULT_PREFIX = '!';
+
+    /** Telegram holds a long poll open for at most this many seconds. */
+    public const MAX_POLL_TIMEOUT = 50;
+
+    /**
+     * @param string  $token       From @BotFather. Never logged.
+     * @param ?string $baseUrl     A self-hosted Bot API server, or `null` for Telegram's own.
+     * @param int     $pollTimeout How long each long poll is held open, in seconds.
+     * @param ?string $caBundle    A `cacert.pem`, for a PHP build that has none.
+     * @param string  $prefix      What commands typed in a Telegram chat start with.
+     * @param ?string $ownerId     The operator's numeric Telegram user id, for the top rung in chat.
+     */
     private function __construct(
         public readonly string $token,
         public readonly ?string $baseUrl,
-        public readonly float $pollInterval,
+        public readonly int $pollTimeout,
         public readonly ?string $caBundle,
+        public readonly string $prefix = self::DEFAULT_PREFIX,
+        public readonly ?string $ownerId = null,
     ) {
     }
 
@@ -48,9 +64,22 @@ final class TelegramConfig
             token: $environment->require('TELEGRAM_TOKEN'),
             // For a self-hosted Bot API server. Unset means Telegram's own.
             baseUrl: $environment->get('TELEGRAM_BASE_URL'),
-            pollInterval: max(0.5, (float) $environment->or('TELEGRAM_POLL_INTERVAL', '1.0')),
+            // Long polling: Telegram answers as soon as there is an update, so
+            // this only bounds how long a quiet connection is held. Shorter
+            // means more requests, never faster delivery.
+            pollTimeout: max(1, min(self::MAX_POLL_TIMEOUT, (int) $environment->or('TELEGRAM_POLL_TIMEOUT', (string) self::MAX_POLL_TIMEOUT))),
             caBundle: $environment->get('TELEGRAM_CA_BUNDLE'),
+            prefix: $environment->or('TELEGRAM_PREFIX', self::DEFAULT_PREFIX),
+            ownerId: self::numericId($environment->get('TELEGRAM_OWNER_ID')),
         );
+    }
+
+    /** A numeric user id, or `null` for anything else — an `@name` can change hands. */
+    private static function numericId(?string $value): ?string
+    {
+        $value = trim((string) $value);
+
+        return preg_match('/^\d{1,20}$/', $value) === 1 ? $value : null;
     }
 
     /**

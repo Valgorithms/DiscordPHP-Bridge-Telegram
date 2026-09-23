@@ -425,7 +425,7 @@ final class ControlActions implements ProvidesActions
      */
     private function explain(\Throwable $e): never
     {
-        $reason = trim(preg_replace('#https?://\S+#', '(url)', $e->getMessage()) ?? '');
+        $reason = trim(preg_replace('#https?://\S+#', '(url)', TelegramText::redact($e->getMessage())) ?? '');
 
         throw new ActionError(match (true) {
             str_contains($reason, 'not enough rights'),

@@ -28,8 +28,15 @@ once for every connector — so what is in this package is only what is actually
 about Telegram.
 
 `.env` needs one thing: `TELEGRAM_TOKEN`, from [@BotFather](https://t.me/BotFather).
-Two more are optional: `TELEGRAM_BASE_URL` for a self-hosted Bot API server, and
-`TELEGRAM_POLL_INTERVAL` to slow the long poll down.
+The rest are optional:
+
+| | |
+| --- | --- |
+| `TELEGRAM_OWNER_ID` | your numeric Telegram user id — the operator rung when you type a command in Telegram |
+| `TELEGRAM_PREFIX` | what chat commands start with; `!` by default, like Twitch |
+| `TELEGRAM_CA_BUNDLE` | a `cacert.pem`, for a PHP build (usually Windows) that has none |
+| `TELEGRAM_BASE_URL` | a self-hosted Bot API server |
+| `TELEGRAM_POLL_TIMEOUT` | how long each long poll is held open, 1–50 seconds (default 50). Updates arrive as soon as there are any either way; shorter only means more requests |
 
 **Turn off privacy mode**, or `/setprivacy` → Disable, via BotFather. With it on
 the bot only sees messages addressed to it, so the bridge relays almost nothing
@@ -51,6 +58,17 @@ asks rather than assuming:
 Only the first image goes as a photo — a media group is a different call and
 needs every attachment to be an image — and everything else relays as a link in
 the text.
+
+The other way, a photo, sticker, voice message or file posted in Telegram is
+downloaded and re-uploaded into Discord, up to 8 MB; anything bigger is named
+instead. The download goes through the Bot API, whose file URLs carry the
+token, so the bytes cross and the URL never does.
+
+**Pacing.** Telegram allows about twenty messages a minute into one group and
+about thirty a second overall, and throttles a bot that keeps finding out. Every
+send and edit passes a per-chat bucket and a global one; a busy chat waits
+without holding up a quiet one, and at most 200 messages wait before the oldest
+are dropped.
 
 ## Commands
 
@@ -75,10 +93,19 @@ package away from meaning two things.
 they can only ever reach a chat somebody with **Manage Server** already bridged
 to that channel. Pinning, unpinning and banning need that same rung.
 
+In a Telegram chat, rank is read off the chat itself: its creator is on the
+administrator rung and its administrators are moderators — the same shape as a
+Twitch broadcaster and their mods — and `TELEGRAM_OWNER_ID` is the operator.
+Rank is asked for only when a line is actually a command, and remembered for a
+minute. `/telegram@YourBot`-style commands from Telegram's own menu work too, if
+you set `TELEGRAM_PREFIX=/`.
+
 `/telegram chat info` answers with a Components v2 panel: what the bot can see
 about the chat, plus Refresh, Member count and Invite link buttons. Each button
 carries the chat id it was drawn for, so a panel still works after the channel
-has been re-linked somewhere else, and after the bot has restarted.
+has been re-linked somewhere else, and after the bot has restarted — but only
+on a chat the server still bridges, so an old panel cannot keep acting on a chat
+that has since been unlinked.
 
 **Invite links are ephemeral and gated, deliberately.**
 `exportChatInviteLink` *revokes the chat's previous link* and mints a new one,
