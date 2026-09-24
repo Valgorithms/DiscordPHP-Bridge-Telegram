@@ -51,9 +51,11 @@ relay asks rather than assuming:
   in place, and vice versa. A network that cannot edit gets the original left
   alone rather than a second "(edited)" message, which is worse.
 - **`Capability\Media`.** A picture posted in Discord arrives in Telegram as a
-  *picture*, not a link. That matters more than it sounds: Discord's CDN links
-  are signed and expire in about a day, so a relayed link works for people
-  reading along live and is dead by the time anyone reads the logs.
+  *picture*, not a link, and a GIF as an animation, since Telegram keeps only
+  the first frame of a GIF sent as a photo. That matters more than it sounds:
+  Discord's CDN links are signed and expire in about a day, so a relayed link
+  works for people reading along live and is dead by the time anyone reads the
+  logs.
 - **`Capability\Avatars`.** A Telegram message relayed into Discord wears the
   sender's profile picture, from `t.me/i/userpic/320/<username>.jpg`. The Bot
   API only hands out photos as file URLs carrying the token, so it is used only

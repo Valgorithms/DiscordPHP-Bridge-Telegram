@@ -314,6 +314,47 @@ final class TelegramConnectorTest extends TestCase
         $this->assertSame('<b>Somebody</b>: look at this', $this->http->callsTo('editMessageCaption')[0]['caption'] ?? null);
     }
 
+    public function testAGifIsSentAsAnAnimationSoItStillMoves(): void
+    {
+        // As a photo, Telegram keeps only its first frame.
+        $this->settle($this->connector->start());
+        $this->http->answers['sendAnimation'] = $this->sentMessage(11);
+
+        $gif = new Attachment(Attachment::IMAGE, 'https://cdn.discordapp.com/attachments/1/3/dance.gif', '3', 'dance.gif', mimeType: 'image/gif');
+        $this->settle($this->connector->sendMedia(self::CHAT, $gif, new Outgoing('Somebody', 'look', media: [$gif])));
+
+        $sent = $this->http->callsTo('sendAnimation')[0] ?? [];
+
+        $this->assertSame('https://cdn.discordapp.com/attachments/1/3/dance.gif', $sent['animation'] ?? null);
+        $this->assertSame('<b>Somebody</b>: look', $sent['caption'] ?? null);
+        $this->assertSame([], $this->http->callsTo('sendPhoto'));
+    }
+
+    public function testAGifIsKnownByItsNameWhenNoTypeWasGiven(): void
+    {
+        $this->settle($this->connector->start());
+        $this->http->answers['sendAnimation'] = $this->sentMessage(11);
+
+        $gif = new Attachment(Attachment::IMAGE, 'https://cdn.discordapp.com/attachments/1/3/dance.GIF', '3', 'dance.GIF');
+        $this->settle($this->connector->sendMedia(self::CHAT, $gif));
+
+        $this->assertCount(1, $this->http->callsTo('sendAnimation'));
+        $this->assertSame([], $this->http->callsTo('sendPhoto'));
+    }
+
+    public function testAnEditOfAGifRewritesItsCaption(): void
+    {
+        $this->settle($this->connector->start());
+        $this->http->answers['sendAnimation'] = $this->sentMessage(11);
+
+        $gif = new Attachment(Attachment::IMAGE, 'https://cdn.discordapp.com/attachments/1/3/dance.gif', '3', 'dance.gif', mimeType: 'image/gif');
+        $this->settle($this->connector->sendMedia(self::CHAT, $gif, new Outgoing('Somebody', 'look', media: [$gif])));
+        $this->settle($this->connector->edit(self::CHAT, '11', new Outgoing('Somebody', 'look at this', media: [$gif], edited: true)));
+
+        $this->assertSame([], $this->http->callsTo('editMessageText'));
+        $this->assertSame('<b>Somebody</b>: look at this', $this->http->callsTo('editMessageCaption')[0]['caption'] ?? null);
+    }
+
     // ── Rooms ──────────────────────────────────────────────────────────
 
     public function testAChatIsStoredByIdWhateverItWasCalled(): void

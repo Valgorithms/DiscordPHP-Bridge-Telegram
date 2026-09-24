@@ -457,8 +457,13 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
         // its own caption.
         $caption = $message === null ? null : $this->caption($message->withoutMedia($media));
 
-        return $this->gateway
-            ->sendPhoto($target, $media->url, $caption)
+        // A GIF sent as a photo arrives as a still of its first frame. Its
+        // caption is edited the same way as a photo's.
+        $sending = self::isGif($media)
+            ? $this->gateway->sendAnimation($target, $media->url, $caption)
+            : $this->gateway->sendPhoto($target, $media->url, $caption);
+
+        return $sending
             ->then(function ($sent) use ($target): ?string {
                 $id = self::messageId($sent);
 
@@ -617,6 +622,19 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
             size: $described['size'],
             link: self::publicLink($raw),
         );
+    }
+
+    /**
+     * Whether an image is a GIF: by the type the sender's platform reported,
+     * or by its name when it reported none.
+     */
+    private static function isGif(Attachment $media): bool
+    {
+        if ($media->mimeType !== null) {
+            return strtolower($media->mimeType) === 'image/gif';
+        }
+
+        return preg_match('/\.gif$/i', (string) ($media->name ?? '')) === 1;
     }
 
     /**

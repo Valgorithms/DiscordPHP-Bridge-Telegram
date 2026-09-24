@@ -199,6 +199,24 @@ final class TelegramGateway
     }
 
     /**
+     * Queues a GIF, by URL, as an animation.
+     *
+     * Not through {@see sendPhoto()}: Telegram turns a GIF sent as a photo into
+     * a still of its first frame. Paced and captioned the same way.
+     *
+     * @return PromiseInterface<Message>
+     */
+    public function sendAnimation(int|string $chatId, string $url, ?string $caption = null): PromiseInterface
+    {
+        return $this->enqueue((string) $chatId, fn (): PromiseInterface => $this->telegram->sendAnimation(
+            (string) $chatId,
+            $url,
+            caption: $caption,
+            parse_mode: $caption === null ? null : 'HTML',
+        ));
+    }
+
+    /**
      * Rewrites a message the bot sent. Paced like a send, because Telegram
      * counts it like one.
      *
