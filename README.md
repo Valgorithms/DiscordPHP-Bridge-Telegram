@@ -44,8 +44,8 @@ and the reason is invisible from Discord.
 
 ## What it can do that a text-only network cannot
 
-The connector implements two of the core's optional capabilities, and the relay
-asks rather than assuming:
+The connector implements three of the core's optional capabilities, and the
+relay asks rather than assuming:
 
 - **`Capability\Editing`.** Editing a Discord message rewrites the Telegram copy
   in place, and vice versa. A network that cannot edit gets the original left
@@ -54,6 +54,13 @@ asks rather than assuming:
   *picture*, not a link. That matters more than it sounds: Discord's CDN links
   are signed and expire in about a day, so a relayed link works for people
   reading along live and is dead by the time anyone reads the logs.
+- **`Capability\Avatars`.** A Telegram message relayed into Discord wears the
+  sender's profile picture, from `t.me/i/userpic/320/<username>.jpg`. The Bot
+  API only hands out photos as file URLs carrying the token, so it is used only
+  to ask whether someone has a photo at all (once an hour per person), and
+  t.me's public copy is what Discord is given. People with no @username, or a
+  photo hidden from everyone, keep the webhook's default picture, and so do
+  posts made as the chat itself. t.me's address is not an official API.
 
 Only the first image goes as a photo — a media group is a different call and
 needs every attachment to be an image — and everything else relays as a link in

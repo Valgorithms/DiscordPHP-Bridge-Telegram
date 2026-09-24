@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace Bridge\Telegram;
 
 use Bridge\Bot;
+use Bridge\Capability\Avatars;
 use Bridge\Capability\Editing;
 use Bridge\Capability\Media as CanSendMedia;
 use Bridge\Capability\ProvidesActions;
@@ -64,7 +65,7 @@ use function React\Promise\resolve;
  *
  * @author Valithor Obsidion <valithor@valgorithms.com>
  */
-final class TelegramConnector implements Connector, ProvidesActions, ProvidesModules, Editing, CanSendMedia
+final class TelegramConnector implements Connector, ProvidesActions, ProvidesModules, Editing, CanSendMedia, Avatars
 {
     /** The name this connector is addressed by, in the store and in chat. */
     public const NAME = 'telegram';
@@ -74,6 +75,15 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
 
     /** How many sent photos to remember, so an edit knows to rewrite a caption. */
     private const REMEMBER_CAPTIONS = 500;
+
+    /** Where t.me serves a public profile picture, by username, with no token. */
+    private const USERPIC = 'https://t.me/i/userpic/320/';
+
+    /** How long whether someone has a picture is believed; they rarely change it. */
+    private const AVATAR_TTL = 3600.0;
+
+    /** How many people's pictures to remember. */
+    private const AVATAR_CACHE = 1000;
 
     private Bot $bot;
 
@@ -91,6 +101,15 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
 
     /** @var array<string, true> "chat:message" for everything sent as a photo, whose text is a caption. */
     private array $captioned = [];
+
+    /**
+     * Each person's picture URL, or `null` for none, by user id, with when it
+     * was looked up. The promise itself is kept, so people who speak at once
+     * share one lookup.
+     *
+     * @var array<string, array{0: PromiseInterface<?string>, 1: float}>
+     */
+    private array $avatars = [];
 
     /**
      * @param array<string, mixed> $clientOptions Extra TelegramPHP options, merged
@@ -312,6 +331,59 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
         );
     }
 
+    /**
+     * The sender's public t.me picture, when there is one to show.
+     *
+     * The Bot API hands out profile photos only as file URLs carrying the bot
+     * token, which must never reach Discord. t.me serves the same picture
+     * without one, keyed by @username, to anyone the owner lets see it. So it
+     * is used when the sender has a username and the Bot API says they have a
+     * photo at all; without that check, a username with no photo would show
+     * t.me's placeholder. The URL is never fetched here: a connector holds no
+     * HTTP client of its own, and Discord does the fetching.
+     *
+     * A failed lookup is not remembered, so the next message tries again.
+     */
+    public function avatarFor(Incoming $message): PromiseInterface
+    {
+        $username = $message->handle ?? '';
+        $userId = $message->authorId ?? '';
+
+        // Telegram's own username rules, which also keep the URL well formed.
+        if (preg_match('/^[A-Za-z0-9_]{4,32}$/', $username) !== 1 || preg_match('/^\d+$/', $userId) !== 1) {
+            return resolve(null);
+        }
+
+        $now = microtime(true);
+        $cached = $this->avatars[$userId] ?? null;
+
+        if ($cached !== null && $now - $cached[1] < self::AVATAR_TTL) {
+            return $cached[0];
+        }
+
+        if (count($this->avatars) >= self::AVATAR_CACHE) {
+            unset($this->avatars[array_key_first($this->avatars)]);
+        }
+
+        $failed = false;
+        $lookup = $this->telegram->getUserProfilePhotos((int) $userId, limit: 1)->then(
+            static fn ($photos): ?string => (int) ($photos->total_count ?? 0) > 0 ? self::USERPIC . $username . '.jpg' : null,
+            function () use ($userId, &$failed): ?string {
+                // Before it was stored, if it failed at once; after, if later.
+                $failed = true;
+                unset($this->avatars[$userId]);
+
+                return null;
+            },
+        );
+
+        if (! $failed) {
+            $this->avatars[$userId] = [$lookup, $now];
+        }
+
+        return $lookup;
+    }
+
     // ── Messages ───────────────────────────────────────────────────────
 
     /**
@@ -505,7 +577,10 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
             media: $media === null ? [] : [$media],
             edited: $edited,
             own: $own,
-            handle: $message->from?->username === null ? null : (string) $message->from->username,
+            // Only a person's. A post made as a channel or group, or by an
+            // anonymous admin, comes "from" one of Telegram's own service
+            // accounts, whose picture is nobody's.
+            handle: $message->sender_chat === null && $message->from?->username !== null ? (string) $message->from->username : null,
         );
 
         foreach ($this->handlers as $handler) {

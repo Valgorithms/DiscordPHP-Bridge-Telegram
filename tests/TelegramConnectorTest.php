@@ -156,6 +156,80 @@ final class TelegramConnectorTest extends TestCase
         $this->assertSame([], $this->http->callsTo('getMe'));
     }
 
+    // ── Avatars ────────────────────────────────────────────────────────
+
+    public function testSomeoneWithAPhotoIsShownWithTheirPublicPicture(): void
+    {
+        $this->http->answers['getUserProfilePhotos'] = ['total_count' => 2, 'photos' => []];
+
+        $avatar = $this->settle($this->connector->avatarFor($this->incoming('5', 'some_body')));
+
+        // t.me's, never a Bot API file URL: those carry the token.
+        $this->assertSame('https://t.me/i/userpic/320/some_body.jpg', $avatar);
+        $this->assertSame(5, $this->http->callsTo('getUserProfilePhotos')[0]['user_id']);
+    }
+
+    public function testAUsernameWithNoPhotoIsShownWithout(): void
+    {
+        // Otherwise the webhook would wear t.me's placeholder.
+        $this->http->answers['getUserProfilePhotos'] = ['total_count' => 0, 'photos' => []];
+
+        $this->assertNull($this->settle($this->connector->avatarFor($this->incoming('5', 'some_body'))));
+    }
+
+    public function testWithoutAUsernameThereIsNothingToLookUp(): void
+    {
+        $this->assertNull($this->settle($this->connector->avatarFor($this->incoming('5', null))));
+        $this->assertNull($this->settle($this->connector->avatarFor($this->incoming('5', 'no/such'))));
+        $this->assertSame([], $this->http->callsTo('getUserProfilePhotos'));
+    }
+
+    public function testOneLookupServesSomeoneForAWhile(): void
+    {
+        $this->http->answers['getUserProfilePhotos'] = ['total_count' => 1, 'photos' => []];
+
+        $this->settle($this->connector->avatarFor($this->incoming('5', 'some_body')));
+        $this->settle($this->connector->avatarFor($this->incoming('5', 'some_body')));
+
+        $this->assertCount(1, $this->http->callsTo('getUserProfilePhotos'));
+    }
+
+    public function testAFailedLookupIsTriedAgainNextTime(): void
+    {
+        $this->http->answers['getUserProfilePhotos'] = new \RuntimeException('timed out');
+        $this->assertNull($this->settle($this->connector->avatarFor($this->incoming('5', 'some_body'))));
+
+        $this->http->answers['getUserProfilePhotos'] = ['total_count' => 1, 'photos' => []];
+        $this->assertSame(
+            'https://t.me/i/userpic/320/some_body.jpg',
+            $this->settle($this->connector->avatarFor($this->incoming('5', 'some_body'))),
+        );
+        $this->assertCount(2, $this->http->callsTo('getUserProfilePhotos'));
+    }
+
+    public function testAPostMadeAsTheChatItselfHasNobodysPicture(): void
+    {
+        $this->settle($this->connector->start());
+
+        $received = [];
+        $this->connector->onIncoming(static function (Incoming $incoming) use (&$received): void {
+            $received[] = $incoming;
+        });
+
+        $this->receive(['text' => 'hi', 'from' => ['id' => 5, 'is_bot' => false, 'first_name' => 'Some', 'username' => 'some_body']]);
+
+        // An anonymous admin: "from" Telegram's own service account.
+        $this->receive([
+            'message_id' => 31,
+            'text' => 'hi',
+            'from' => ['id' => 1087968824, 'is_bot' => true, 'first_name' => 'Group', 'username' => 'GroupAnonymousBot'],
+            'sender_chat' => ['id' => (int) self::CHAT, 'type' => 'supergroup', 'title' => 'My Group'],
+        ]);
+
+        $this->assertSame('some_body', $received[0]->handle);
+        $this->assertNull($received[1]->handle);
+    }
+
     // ── Sending ────────────────────────────────────────────────────────
 
     public function testARelayedMessageIsAValidBotApiCall(): void
@@ -420,6 +494,11 @@ final class TelegramConnectorTest extends TestCase
     private function receive(array $fields): void
     {
         $this->connector->getTelegram()->emit(Event::MESSAGE, [$this->message($fields)]);
+    }
+
+    private function incoming(string $userId, ?string $username): Incoming
+    {
+        return new Incoming(target: self::CHAT, author: 'Some Body', authorId: $userId, text: 'hi', handle: $username);
     }
 
     /** @param array<string, mixed> $fields */
