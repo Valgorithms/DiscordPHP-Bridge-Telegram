@@ -24,6 +24,7 @@ use Bridge\Command\Slash;
 use Bridge\Command\SlashOption;
 use Bridge\Room;
 use Bridge\Support\MessageText;
+use Bridge\Telegram\TelegramConnector;
 use Bridge\Telegram\TelegramText;
 use Discord\Parts\Interactions\Interaction;
 use React\Promise\PromiseInterface;
@@ -178,7 +179,7 @@ final class ControlActions implements ProvidesActions
 
         $html = sprintf(
             '<b>%s</b>: %s',
-            TelegramText::escapeHtml($context->invokerName),
+            TelegramText::escapeHtml(self::speaker($context)),
             TelegramText::escapeHtml(MessageText::truncate($text, TelegramText::LIMIT - 200)),
         );
 
@@ -200,7 +201,7 @@ final class ControlActions implements ProvidesActions
         $caption = trim((string) ($arguments->named('caption') ?? ''));
         $caption = $caption === '' ? null : sprintf(
             '<b>%s</b>: %s',
-            TelegramText::escapeHtml($context->invokerName),
+            TelegramText::escapeHtml(self::speaker($context)),
             TelegramText::escapeHtml(MessageText::truncate($caption, TelegramText::CAPTION_LIMIT - 200)),
         );
 
@@ -386,6 +387,21 @@ final class ControlActions implements ProvidesActions
     }
 
     /** What a bridged chat is called, for a confirmation that reads like one. */
+    /**
+     * Who is speaking, and from where, for something posted on their behalf.
+     *
+     * Typed in Telegram it needs no label. From Discord or Twitch it says so,
+     * as relayed chat does, so nobody is taken for a member of the chat.
+     */
+    private static function speaker(Context $context): string
+    {
+        $where = $context->surface->name;
+
+        return $where === TelegramConnector::NAME
+            ? $context->invokerName
+            : $context->invokerName . ' (' . $where . ')';
+    }
+
     private function titleOf(Context $context, string $chatId): string
     {
         return MessageText::escapeMarkdown(

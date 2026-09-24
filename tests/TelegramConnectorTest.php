@@ -15,6 +15,9 @@ namespace Bridge\Telegram\Tests;
 
 use Bridge\Bot;
 use Bridge\Command\Access;
+use Bridge\Command\Arguments;
+use Bridge\Command\Context;
+use Bridge\Command\Surface;
 use Bridge\Config;
 use Bridge\Environment;
 use Bridge\Message\Incoming;
@@ -475,6 +478,34 @@ final class TelegramConnectorTest extends TestCase
         $this->assertNull($received[0]->media[0]->url);
         $this->assertSame('small', $received[0]->media[0]->id);
         $this->assertNull($received[1]->media[0]->link);
+    }
+
+    public function testSomethingSentFromAnotherNetworkSaysWhereItCameFrom(): void
+    {
+        $this->settle($this->connector->start());
+        $this->http->answers['sendMessage'] = $this->sentMessage(12);
+
+        $send = null;
+        foreach ($this->connector->actions() as $action) {
+            if ($action->name === 'send') {
+                $send = $action;
+            }
+        }
+        $this->assertNotNull($send);
+
+        $surfaces = [
+            [new Surface('twitch', 'Twitch', 500, markdown: false, lines: false), '<b>Alice (twitch)</b>: hi'],
+            [Surface::discord(), '<b>Alice (discord)</b>: hi'],
+            // Typed in the chat itself: it needs no label.
+            [$this->connector->surface(), '<b>Alice</b>: hi'],
+        ];
+
+        foreach ($surfaces as $i => [$surface, $expected]) {
+            $context = new Context($this->botOf(), $surface, Access::Everyone, 'Alice', '1', connector: 'telegram', target: self::CHAT);
+            $this->settle($send->run($context, Arguments::fromParts(['hi'])));
+
+            $this->assertSame($expected, $this->http->callsTo('sendMessage')[$i]['text'] ?? null, $surface->name);
+        }
     }
 
     public function testACommandIsAnsweredInTheChatItCameFrom(): void
