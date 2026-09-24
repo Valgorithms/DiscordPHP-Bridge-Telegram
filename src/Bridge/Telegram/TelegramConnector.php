@@ -615,7 +615,27 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
             id: $described['mirrorable'] ? $described['file_id'] : null,
             name: $described['filename'] ?? $described['label'],
             size: $described['size'],
+            link: self::publicLink($raw),
         );
+    }
+
+    /**
+     * The message's public page on t.me, when its chat has a public username.
+     *
+     * `t.me/<chat>/<id>` opens for anyone and previews the picture, so a
+     * network that can only carry text still gets something to click. A private
+     * chat's link (`t.me/c/…`) opens only for its members, so it gets none.
+     *
+     * @param array<string, mixed> $raw
+     */
+    private static function publicLink(array $raw): ?string
+    {
+        $username = (string) ($raw['chat']['username'] ?? '');
+        $id = (int) ($raw['message_id'] ?? 0);
+
+        return $id > 0 && preg_match('/^[A-Za-z0-9_]{4,32}$/', $username) === 1
+            ? 'https://t.me/' . $username . '/' . $id
+            : null;
     }
 
     /** A photo's caption: the relayed text, or at least who sent it. */

@@ -411,6 +411,31 @@ final class TelegramConnectorTest extends TestCase
         $this->assertFalse($received[0]->own);
     }
 
+    public function testAPhotoInAPublicChatCarriesALinkToItsPost(): void
+    {
+        $this->settle($this->connector->start());
+
+        $received = [];
+        $this->connector->onIncoming(static function (Incoming $incoming) use (&$received): void {
+            $received[] = $incoming;
+        });
+
+        $photo = [['file_id' => 'small', 'file_unique_id' => 's', 'width' => 90, 'height' => 90, 'file_size' => 100]];
+
+        $this->receive([
+            'photo' => $photo,
+            'chat' => ['id' => (int) self::CHAT, 'type' => 'supergroup', 'title' => 'My Group', 'username' => 'mygroup'],
+        ]);
+        // A private group's links open only for its members.
+        $this->receive(['message_id' => 31, 'photo' => $photo]);
+
+        $this->assertSame('https://t.me/mygroup/30', $received[0]->media[0]->link);
+        // Still fetched as bytes for Discord: the link is for text-only networks.
+        $this->assertNull($received[0]->media[0]->url);
+        $this->assertSame('small', $received[0]->media[0]->id);
+        $this->assertNull($received[1]->media[0]->link);
+    }
+
     public function testACommandIsAnsweredInTheChatItCameFrom(): void
     {
         $this->settle($this->connector->start());

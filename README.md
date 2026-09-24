@@ -67,9 +67,12 @@ needs every attachment to be an image — and everything else relays as a link i
 the text.
 
 The other way, a photo, sticker, voice message or file posted in Telegram is
-downloaded and re-uploaded into Discord, up to 8 MB; anything bigger is named
-instead. The download goes through the Bot API, whose file URLs carry the
-token, so the bytes cross and the URL never does.
+downloaded and re-uploaded into Discord, up to 8 MB. The download goes through
+the Bot API, whose file URLs carry the token, so the bytes cross and the URL
+never does. In a chat with a public username, a network that can only carry
+text — Twitch — gets a link to the post instead, `https://t.me/<chat>/<id>`,
+which anyone can open; so does Discord, for a file too big to copy. A private
+chat's post links open only for its members, so there the file is named.
 
 **Pacing.** Telegram allows about twenty messages a minute into one group and
 about thirty a second overall, and throttles a bot that keeps finding out. Every
