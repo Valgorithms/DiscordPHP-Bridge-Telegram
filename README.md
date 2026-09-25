@@ -140,8 +140,9 @@ takes seriously:
 
 ## Coming from DiscordPHP-TelegramRelay
 
-This repository *is* that project, with everything that was not about Telegram
-moved into the core. The commands were renamed to make room for other networks:
+This repository *is* that project, renamed to match its package, with everything
+that was not about Telegram moved into the core. The commands were renamed to
+make room for other networks:
 
 | Before | Now |
 | --- | --- |
