@@ -175,7 +175,7 @@ final class TelegramConnector implements Connector, ProvidesActions, ProvidesMod
             'logger' => $bot->getLogger(),
             // Windows PHP usually has no CA bundle configured, and TLS to
             // api.telegram.org fails outright without one.
-            'socket_options' => $this->config->socketOptions(),
+            'socket_options' => $this->config->socketOptions() + $bot->windowsDnsSocketOptions(),
             'poll_timeout' => $this->config->pollTimeout,
             'allowed_updates' => self::UPDATES,
         ];
